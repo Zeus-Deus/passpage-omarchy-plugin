@@ -251,7 +251,7 @@ Panel {
 
           PasspageIcon {
             anchors.verticalCenter: parent.verticalCenter
-            iconSize: Style.space(12)
+            iconSize: Style.bar.iconFont
             color: root.countText !== "" || root.attention ? root.barForeground : Qt.darker(root.barForeground, 1.55)
             badgeColor: root.urgent
             warning: root.attention

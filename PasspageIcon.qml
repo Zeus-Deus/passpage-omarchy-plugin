@@ -16,21 +16,24 @@ Item {
   property bool showInset: iconSize >= 18
   // Two tilted letters turn to mush under ~16px; a single P keeps the mark readable in the bar.
   readonly property bool compact: iconSize < 16
+  // Bar glyphs around us are upright, solid, ~13px shapes. In compact mode
+  // drop the tilt and thicken the frame so the mark carries the same weight.
+  readonly property real tilt: compact ? 0 : -9
 
   width: iconSize
   height: iconSize
   implicitWidth: iconSize
   implicitHeight: iconSize
 
-  readonly property real frameWidth: iconSize * 0.92
-  readonly property real frameHeight: iconSize * 0.74
-  readonly property real stroke: Math.max(1, iconSize * 0.085)
+  readonly property real frameWidth: compact ? iconSize * 1.0 : iconSize * 0.92
+  readonly property real frameHeight: compact ? iconSize * 0.82 : iconSize * 0.74
+  readonly property real stroke: compact ? Math.max(1.5, iconSize * 0.13) : Math.max(1, iconSize * 0.085)
 
   Item {
     anchors.centerIn: parent
     width: root.frameWidth
     height: root.frameHeight
-    rotation: -9
+    rotation: root.tilt
 
     Rectangle {
       anchors.fill: parent
@@ -58,7 +61,7 @@ Item {
       text: root.compact ? "P" : "PP"
       color: root.color
       font.family: Style.font.family
-      font.pixelSize: Math.max(6, root.iconSize * (root.compact ? 0.6 : 0.42))
+      font.pixelSize: Math.max(6, root.iconSize * (root.compact ? 0.62 : 0.42))
       font.bold: true
       font.letterSpacing: root.compact ? 0 : root.iconSize * 0.04
       renderType: Text.QtRendering
