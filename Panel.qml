@@ -40,7 +40,7 @@ Panel {
     keyMissing: passpage.keyMissing, error: passpage.error, loading: passpage.loading,
     activeCount: passpage.activeCount, expiredCount: passpage.expiredCount, soonCount: passpage.soonCount
   })
-  readonly property string countText: passpage.loaded && passpage.activeCount > 0 ? String(passpage.activeCount) : ""
+  readonly property string countText: passpage.loaded && !passpage.keyMissing && passpage.activeCount > 0 ? String(passpage.activeCount) : ""
   readonly property string dashboardUrl: passpage.baseUrl + "/dashboard"
 
   function selectedShare() {

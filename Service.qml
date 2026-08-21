@@ -55,6 +55,7 @@ Item {
   }
 
   function recompute() {
+    nowMs = Date.now()
     var parts = Model.partition(shares, nowMs)
     active = parts.active
     expired = parts.expired
@@ -252,7 +253,7 @@ Item {
     interval: 60000
     running: true
     repeat: true
-    onTriggered: { root.nowMs = Date.now(); root.recompute() }
+    onTriggered: root.recompute()
   }
 
   // The first FileView read can race shell startup; one delayed retry covers it.
