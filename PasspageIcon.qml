@@ -14,6 +14,8 @@ Item {
   property color badgeColor: Color.urgent
   property bool warning: false
   property bool showInset: iconSize >= 18
+  // Two tilted letters turn to mush under ~16px; a single P keeps the mark readable in the bar.
+  readonly property bool compact: iconSize < 16
 
   width: iconSize
   height: iconSize
@@ -53,13 +55,13 @@ Item {
     Text {
       anchors.centerIn: parent
       anchors.verticalCenterOffset: root.iconSize * 0.02
-      text: "PP"
+      text: root.compact ? "P" : "PP"
       color: root.color
       font.family: Style.font.family
-      font.pixelSize: Math.max(5, root.iconSize * 0.42)
+      font.pixelSize: Math.max(6, root.iconSize * (root.compact ? 0.6 : 0.42))
       font.bold: true
-      font.letterSpacing: root.iconSize * 0.04
-      renderType: Text.NativeRendering
+      font.letterSpacing: root.compact ? 0 : root.iconSize * 0.04
+      renderType: Text.QtRendering
     }
   }
 

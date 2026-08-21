@@ -62,10 +62,10 @@ test("partition and counts", () => {
   assert.equal(M.countExpiringSoon(p.active, NOW), 1)
 })
 
-test("displayTitle falls back to a shortened slug", () => {
+test("displayTitle falls back to the slug", () => {
   assert.equal(M.displayTitle(share({ title: "  Q3 deck " })), "Q3 deck")
-  assert.equal(M.displayTitle(share()), "q5Kuzqid66…")
-  assert.equal(M.displayTitle(share({ slug: "short" })), "short")
+  assert.equal(M.displayTitle(share()), "Ab3dEfGhIjKlMnOpQrStUv")
+  assert.equal(M.displayTitle(null), "")
 })
 
 test("durationText uses the two largest units", () => {

@@ -88,13 +88,11 @@ function countExpiringSoon(shares, nowMs) {
   return n
 }
 
-// Untitled shares show a shortened slug so rows stay distinguishable.
+// Untitled shares fall back to the slug; rows elide it if space runs out.
 function displayTitle(share) {
   if (!share) return ""
   var title = String(share.title || "").trim()
-  if (title !== "") return title
-  var slug = String(share.slug || "")
-  return slug.length > 10 ? slug.slice(0, 10) + "…" : slug
+  return title !== "" ? title : String(share.slug || "")
 }
 
 function plural(n, word) {
