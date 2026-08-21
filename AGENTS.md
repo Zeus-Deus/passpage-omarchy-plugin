@@ -38,6 +38,23 @@ agents, not from this plugin.
   "Active" is not a field: `expires_at == null || expires_at > now`.
   No bearer `/api/auth/me`, so the plan's share cap is unknown to the plugin.
 
+## Layout
+
+- `manifest.json` — id `space.passpage.shares`, kind `bar-widget`, entry `Panel.qml`.
+- `Panel.qml` — bar button + `KeyboardPanel`; cursor model, rows, inline
+  passcode editor, delete `ConfirmDialog`, `IpcHandler` target `passpage`.
+- `Service.qml` — key `FileView`, curl `Process`es, share state, polling.
+- `PasspageIcon.qml` — the stamp mark drawn natively ("P" under 16px, "PP" above).
+- `Model.js` + `tests/model.test.js` — pure helpers; `node --test tests/model.test.js`.
+
+## Dev loop
+
+Install once with `omarchy plugin add "$PWD" --yes --enable` (clones the repo),
+then after each commit: `git -C ~/.config/omarchy/plugins/space.passpage.shares pull
+&& omarchy-restart-shell`. Check with `omarchy-shell passpage status` and a
+screenshot (`omarchy-shell passpage open; grim …`). Use `wtype` for key tests.
+Publish throwaway shares for destructive tests — never delete the user's.
+
 ## Plugin conventions (from the shell + the installed gazelle plugin)
 
 - Single `Panel.qml` as `entryPoints.barWidget`, built on `qs.Ui` `Panel` +
