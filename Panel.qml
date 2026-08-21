@@ -249,12 +249,44 @@ Panel {
           anchors.centerIn: parent
           spacing: Style.space(3)
 
-          PasspageIcon {
+          // A plain Nerd Font page glyph: at bar size every neighbour is a
+          // solid 13px icon, and the brand stamp can't read at that scale.
+          // The tilted stamp lives in the panel hero instead.
+          Item {
             anchors.verticalCenter: parent.verticalCenter
-            iconSize: Style.bar.iconFont
-            color: root.countText !== "" || root.attention ? root.barForeground : Qt.darker(root.barForeground, 1.55)
-            badgeColor: root.urgent
-            warning: root.attention
+            width: barGlyph.implicitWidth
+            height: barGlyph.implicitHeight
+
+            Text {
+              id: barGlyph
+              text: "󰈙"
+              color: root.countText !== "" || root.attention ? root.barForeground : Qt.darker(root.barForeground, 1.55)
+              font.family: root.fontFamily
+              font.pixelSize: Style.bar.iconFont
+              renderType: Text.NativeRendering
+            }
+
+            BorderSurface {
+              visible: root.attention
+              width: Math.max(7, barGlyph.implicitHeight * 0.5)
+              height: width
+              radius: width / 2
+              color: root.urgent
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              anchors.rightMargin: -width * 0.25
+              anchors.bottomMargin: -width * 0.1
+              borderSpec: Border.flat(Color.bar.background, 1)
+
+              Text {
+                anchors.centerIn: parent
+                text: "!"
+                color: Color.background
+                font.family: root.fontFamily
+                font.pixelSize: Math.max(6, parent.height * 0.72)
+                font.bold: true
+              }
+            }
           }
 
           Text {
