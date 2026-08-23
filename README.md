@@ -97,10 +97,11 @@ This deletes the plugin folder and its bar entry. Your API key file
 
 - The API key and any passcode you type are handed to `curl` through a config
   file on stdin — never on the command line, so they are not visible in `/proc`.
-- Responses are bounded: curl refuses bodies over 2 MiB, the plugin kills curl
-  if stdout/stderr exceed their caps while streaming, and the share list is
-  clamped (≤500 entries, every field length-checked) before it reaches the UI.
-  A broken or hostile `baseUrl` cannot grow the shell process.
+- Responses are bounded at the source: curl's stdout and stderr pass through
+  `head -c` (2 MiB / 16 KiB) before they reach the shell, so an oversized
+  body is cut off and reported as an error rather than buffered. The share
+  list is then clamped (≤500 entries, every field length-checked) before it
+  reaches the UI. A broken or hostile `baseUrl` cannot grow the shell process.
 - Only bearer-token endpoints are used: `GET /api/shares/_mine`,
   `PATCH /api/shares/<slug>/passcode/_api`, `DELETE /api/shares/<slug>/_api`.
   The plugin cannot create keys or publish pages.

@@ -132,14 +132,14 @@ Item {
     actionProcess.running = true
   }
 
-  // curl exits 63 when max-filesize trips; overflow is our own streaming cap.
-  function oversized(exitCode, overflow) {
-    return overflow === true || exitCode === 63
+  // A body that fills the cap was truncated by head (or curl hit max-filesize, exit 63).
+  function oversized(exitCode, output) {
+    return exitCode === 63 || String(output || "").length >= Model.MAX_RESPONSE_BYTES
   }
 
-  function finishList(exitCode, overflow, output, stderr) {
+  function finishList(exitCode, output, stderr) {
     loading = false
-    if (oversized(exitCode, overflow)) { error = Model.errorMessage(413, ""); return }
+    if (oversized(exitCode, output)) { error = Model.errorMessage(413, ""); return }
     var result = Model.parseCurlOutput(output)
     if (result.status === 200) {
       var data = Model.parseJson(result.body)
@@ -158,9 +158,9 @@ Item {
     if (result.status === 0 && String(stderr || "").trim() !== "") error = "Network error — " + String(stderr).trim()
   }
 
-  function finishAction(kind, slug, exitCode, overflow, output) {
+  function finishAction(kind, slug, exitCode, output) {
     busySlug = ""
-    if (oversized(exitCode, overflow)) {
+    if (oversized(exitCode, output)) {
       showActionError(Model.errorMessage(413, ""))
       actionFinished(kind, slug, false)
       return
@@ -213,36 +213,23 @@ Item {
     }
   }
 
-  // Both curl runs stream through SplitParser (empty marker = emit as read)
-  // into a bounded buffer. Exceeding the cap kills curl on the spot, so a
-  // misbehaving endpoint can never grow the shell process — curl's own
-  // max-filesize (in the config) is the first line, this is the second.
-  function collect(proc, which, data) {
-    if (proc.overflow) return
-    var cap = which === "out" ? Model.MAX_RESPONSE_BYTES : Model.MAX_STDERR_BYTES
-    var current = which === "out" ? proc.out : proc.err
-    if (current.length + data.length > cap) {
-      proc.overflow = true
-      proc.out = ""
-      proc.err = ""
-      proc.signal(9)
-      return
-    }
-    if (which === "out") proc.out = current + data
-    else proc.err = current + data
-  }
+  // The response ceiling lives outside the shell process: curl's stdout and
+  // stderr each pass through `head -c`, so the bytes that reach Quickshell
+  // physically cannot exceed the caps. When head closes early, curl dies on
+  // SIGPIPE and the trailing status line never arrives — finish*() treats a
+  // body at the cap as "too large". (curl's own max-filesize in the config
+  // only helps when the server announces a length; a chunked stream walks
+  // straight past it, and Qt-side parsers buffer before they emit.)
+  readonly property var curlCommand: ["bash", "-c",
+    "exec 2> >(head -c " + Model.MAX_STDERR_BYTES + " >&2); exec curl --config - | head -c " + Model.MAX_RESPONSE_BYTES]
 
   Process {
     id: listProcess
     property string config: ""
-    property string out: ""
-    property string err: ""
-    property bool overflow: false
-    command: ["curl", "--config", "-"]
+    command: root.curlCommand
     stdinEnabled: true
-    stdout: SplitParser { splitMarker: ""; onRead: function(data) { root.collect(listProcess, "out", data) } }
-    stderr: SplitParser { splitMarker: ""; onRead: function(data) { root.collect(listProcess, "err", data) } }
-    onRunningChanged: if (running) { out = ""; err = ""; overflow = false }
+    stdout: StdioCollector { id: listOut; waitForEnd: true }
+    stderr: StdioCollector { id: listErr; waitForEnd: true }
     onStarted: {
       write(config)
       config = ""
@@ -250,7 +237,7 @@ Item {
       stdinEnabled = false
       stdinEnabled = true
     }
-    onExited: function(exitCode) { root.finishList(exitCode, overflow, out, err) }
+    onExited: function(exitCode) { root.finishList(exitCode, listOut.text, listErr.text) }
   }
 
   Process {
@@ -258,24 +245,18 @@ Item {
     property string kind: ""
     property string slug: ""
     property string config: ""
-    property string out: ""
-    property string err: ""
-    property bool overflow: false
-    command: ["curl", "--config", "-"]
+    command: root.curlCommand
     stdinEnabled: true
-    stdout: SplitParser { splitMarker: ""; onRead: function(data) { root.collect(actionProcess, "out", data) } }
-    stderr: SplitParser { splitMarker: ""; onRead: function(data) { root.collect(actionProcess, "err", data) } }
-    onRunningChanged: {
-      if (running) { out = ""; err = ""; overflow = false }
-      else config = ""
-    }
+    stdout: StdioCollector { id: actionOut; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onRunningChanged: if (!running) config = ""
     onStarted: {
       write(config)
       config = ""
       stdinEnabled = false
       stdinEnabled = true
     }
-    onExited: function(exitCode) { root.finishAction(kind, slug, exitCode, overflow, out) }
+    onExited: function(exitCode) { root.finishAction(kind, slug, exitCode, actionOut.text) }
   }
 
   Timer {
