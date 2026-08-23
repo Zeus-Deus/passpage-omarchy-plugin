@@ -219,7 +219,7 @@ Panel {
     function toggle(): void { root.toggle() }
     function refresh(): string { passpage.refresh(); return "ok" }
     function status(): string {
-      return JSON.stringify({ active: passpage.activeCount, expired: passpage.expiredCount,
+      return JSON.stringify({ loaded: passpage.loaded, active: passpage.activeCount, expired: passpage.expiredCount,
         expiringSoon: passpage.soonCount, error: passpage.error, keyMissing: passpage.keyMissing })
     }
   }
