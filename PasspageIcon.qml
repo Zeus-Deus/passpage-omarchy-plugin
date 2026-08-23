@@ -4,8 +4,9 @@ import qs.Ui
 
 // Native rendering of the passpage stamp mark (the site's LogoMark.tsx):
 // a slightly tilted frame, a faint inner inset, and "PP". Drawn with
-// rectangles and text rather than an SVG so it stays crisp at bar size and
-// takes the theme foreground like every other bar glyph.
+// rectangles and text rather than an SVG so it takes the theme foreground.
+// Used in the panel hero; the bar uses a plain Nerd Font page glyph because
+// this mark cannot read at 13px.
 Item {
   id: root
 
@@ -14,26 +15,21 @@ Item {
   property color badgeColor: Color.urgent
   property bool warning: false
   property bool showInset: iconSize >= 18
-  // Two tilted letters turn to mush under ~16px; a single P keeps the mark readable in the bar.
-  readonly property bool compact: iconSize < 16
-  // Bar glyphs around us are upright, solid, ~13px shapes. In compact mode
-  // drop the tilt and thicken the frame so the mark carries the same weight.
-  readonly property real tilt: compact ? 0 : -9
 
   width: iconSize
   height: iconSize
   implicitWidth: iconSize
   implicitHeight: iconSize
 
-  readonly property real frameWidth: compact ? iconSize * 1.0 : iconSize * 0.92
-  readonly property real frameHeight: compact ? iconSize * 0.82 : iconSize * 0.74
-  readonly property real stroke: compact ? Math.max(1.5, iconSize * 0.13) : Math.max(1, iconSize * 0.085)
+  readonly property real frameWidth: iconSize * 0.92
+  readonly property real frameHeight: iconSize * 0.74
+  readonly property real stroke: Math.max(1, iconSize * 0.085)
 
   Item {
     anchors.centerIn: parent
     width: root.frameWidth
     height: root.frameHeight
-    rotation: root.tilt
+    rotation: -9
 
     Rectangle {
       anchors.fill: parent
@@ -58,12 +54,12 @@ Item {
     Text {
       anchors.centerIn: parent
       anchors.verticalCenterOffset: root.iconSize * 0.02
-      text: root.compact ? "P" : "PP"
+      text: "PP"
       color: root.color
       font.family: Style.font.family
-      font.pixelSize: Math.max(6, root.iconSize * (root.compact ? 0.62 : 0.42))
+      font.pixelSize: Math.max(6, root.iconSize * 0.42)
       font.bold: true
-      font.letterSpacing: root.compact ? 0 : root.iconSize * 0.04
+      font.letterSpacing: root.iconSize * 0.04
       renderType: Text.QtRendering
     }
   }

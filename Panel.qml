@@ -7,7 +7,7 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Bar widget + popup for passpage.space. The bar shows the stamp mark with
+// Bar widget + popup for passpage.space. The bar shows a page glyph with
 // the active-share count; the panel lists shares with copy / open / passcode
 // / delete, keyboard-driven like the first-party tailscale and network panels.
 Panel {
@@ -94,9 +94,10 @@ Panel {
     else copySelected()
   }
 
+  // Expired links are dead, so copy/open only apply to active rows.
   function copySelected() {
     var share = selectedShare()
-    if (share) passpage.copyLink(share)
+    if (share && focusSection === "active") passpage.copyLink(share)
   }
 
   function openSelected() {
@@ -606,7 +607,7 @@ Panel {
       hoverEnabled: true
       cursorShape: Qt.ArrowCursor
       onContainsMouseChanged: if (containsMouse) root.setRowCursor(row.section, row.rowIndex)
-      onClicked: if (!row.editing) passpage.copyLink(row.share)
+      onClicked: if (!row.editing && row.isActive) passpage.copyLink(row.share)
     }
 
     RowLayout {
@@ -721,7 +722,11 @@ Panel {
         horizontalPadding: Style.spacing.controlGap
         verticalPadding: Style.spacing.controlPaddingY
         enabled: !row.isBusy
-        onAccepted: passpage.setPasscode(row.share, text)
+        // Enter with nothing typed on an unprotected share is a no-op, not a "remove".
+        onAccepted: {
+          if (text === "" && !(row.share && row.share.has_passcode)) root.cancelPasscodeEditor()
+          else passpage.setPasscode(row.share, text)
+        }
         Keys.onEscapePressed: root.cancelPasscodeEditor()
         onVisibleChanged: {
           if (visible) Qt.callLater(forceActiveFocus)
