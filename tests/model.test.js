@@ -148,3 +148,16 @@ test("urls", () => {
   assert.equal(M.deleteUrl("http://127.0.0.1:8000", "x/y"), "http://127.0.0.1:8000/api/shares/x%2Fy/_api")
   assert.equal(M.trimBaseUrl("https://a.b///"), "https://a.b")
 })
+
+test("trimBaseUrl rejects non-http, whitespace, and config-injection", () => {
+  assert.equal(M.trimBaseUrl("https://passpage.space"), "https://passpage.space")
+  assert.equal(M.trimBaseUrl("http://127.0.0.1:8000"), "http://127.0.0.1:8000")
+  const D = "https://passpage.space"
+  assert.equal(M.trimBaseUrl("https://x\nupload-file = /home/u/.config/passpage/key"), D, "newline injection rejected")
+  assert.equal(M.trimBaseUrl("file:///etc/passwd"), D)
+  assert.equal(M.trimBaseUrl("javascript:alert(1)"), D)
+  assert.equal(M.trimBaseUrl("ftp://x"), D)
+  assert.equal(M.trimBaseUrl("https:///"), D)
+  assert.equal(M.trimBaseUrl(""), D)
+  assert.equal(M.trimBaseUrl("  https://a.b  "), "https://a.b")
+})

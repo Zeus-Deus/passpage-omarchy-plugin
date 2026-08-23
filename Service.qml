@@ -96,7 +96,9 @@ Item {
 
   function copyLink(share) {
     if (!share || !share.url) return
-    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(share.url) + " | wl-copy"])
+    // URL as a positional arg ($1), never interpolated into the script text —
+    // no quoting to get wrong even though share.url is endpoint-controlled.
+    Quickshell.execDetached(["bash", "-c", "printf %s \"$1\" | wl-copy", "wl-copy", share.url])
     // Feedback lives on the row's copy button (it turns into a check), not in
     // the status line — less noise for the most common action.
     copiedSlug = share.slug
@@ -104,8 +106,9 @@ Item {
   }
 
   function openInBrowser(share) {
-    if (!share || !share.url) return
-    Quickshell.execDetached(["omarchy-launch-browser", share.url])
+    var url = share ? Model.boundedUrl(share.url) : ""
+    if (url === "") return   // https?:// only — blocks file:, a leading '-', etc.
+    Quickshell.execDetached(["omarchy-launch-browser", url])
   }
 
   function deleteShare(share) {
@@ -125,6 +128,13 @@ Item {
     }))
   }
 
+  // Accept the PATCH response only if it re-describes the same slug we acted on;
+  // a hostile endpoint must not repaint a row with a different share's data.
+  function updateForSlug(body, slug) {
+    var norm = Model.normaliseShares([Model.parseJson(body)])
+    return norm.length > 0 && norm[0].slug === slug ? norm[0] : null
+  }
+
   function startAction(kind, slug, config) {
     actionProcess.kind = kind
     actionProcess.slug = slug
@@ -133,9 +143,10 @@ Item {
     actionProcess.running = true
   }
 
-  // A body that fills the cap was truncated by head (or curl hit max-filesize, exit 63).
+  // head closing the pipe kills curl with SIGPIPE (141) under pipefail; 63 is
+  // curl's own max-filesize. The length check is a belt-and-braces fallback.
   function oversized(exitCode, output) {
-    return exitCode === 63 || String(output || "").length >= Model.MAX_RESPONSE_BYTES
+    return exitCode === 141 || exitCode === 63 || String(output || "").length >= Model.MAX_RESPONSE_BYTES
   }
 
   function finishList(exitCode, output, stderr) {
@@ -181,12 +192,11 @@ Item {
       shares = next
       showStatus("Deleted " + label)
     } else {
-      var updated = Model.parseJson(result.body)
+      var updated = updateForSlug(result.body, slug)
       var replaced = []
       for (var j = 0; j < shares.length; j++) {
         var s = shares[j]
-        if (s.slug === slug && updated) replaced.push(Model.normaliseShares([updated])[0] || s)
-        else replaced.push(s)
+        replaced.push(s.slug === slug && updated ? updated : s)
       }
       shares = replaced
       showStatus((kind === "lock" ? "Passcode set on " : "Passcode removed from ") + label)
@@ -204,7 +214,10 @@ Item {
     onFileChanged: reload()
     onLoaded: {
       var wasMissing = root.apiKey === ""
+      // A real key is ~46 chars; anything large is not ours (and guards against
+      // a huge/garbage file at the fixed key path growing the shell).
       var raw = String(text() || "")
+      if (raw.length > 4096) raw = ""
       root.apiKey = Model.sanitizeKey(raw)
       root.keyInvalid = root.apiKey === "" && raw.trim() !== ""
       root.keyChecked = true
@@ -227,8 +240,14 @@ Item {
   // `-q` must be curl's first argument: it stops ~/.curlrc from being read,
   // where an inherited `url`, `upload-file` or `insecure` line would receive
   // our bearer header, exfiltrate files, or weaken TLS.
+  //
+  // stdout/stderr each pass through `head -c` so the bytes reaching the shell
+  // are capped at the producer. With `pipefail`, when head hits the cap and
+  // closes the pipe curl dies on SIGPIPE and the pipeline exits 141 (or 63 if
+  // curl's own max-filesize tripped first) — that is how finish*() detects an
+  // oversized response, independent of the body's character encoding.
   readonly property var curlCommand: ["bash", "-c",
-    "exec 2> >(head -c " + Model.MAX_STDERR_BYTES + " >&2); exec curl -q --config - | head -c " + Model.MAX_RESPONSE_BYTES]
+    "set -o pipefail; exec 2> >(head -c " + Model.MAX_STDERR_BYTES + " >&2); exec curl -q --config - | head -c " + Model.MAX_RESPONSE_BYTES]
 
   Process {
     id: listProcess

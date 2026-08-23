@@ -226,10 +226,14 @@ function curlConfig(opts) {
   return lines.join("\n") + "\n"
 }
 
+// Reject anything that is not a plain http(s) URL: an embedded newline would
+// inject extra directives into the curl config, and a non-http scheme could
+// smuggle file:. baseUrl comes from user settings, but a user can be talked
+// into pasting a hostile "mirror" URL, so validate it rather than trust it.
 function trimBaseUrl(url) {
   var s = String(url || "").trim()
   while (s.length > 0 && s[s.length - 1] === "/") s = s.slice(0, -1)
-  return s === "" ? "https://passpage.space" : s
+  return /^https?:\/\/[^\s]+$/.test(s) ? s : "https://passpage.space"
 }
 
 function apiUrl(baseUrl, path) {

@@ -98,7 +98,11 @@ This deletes the plugin folder and its bar entry. Your API key file
 - The API key and any passcode you type are handed to `curl` through a config
   file on stdin — never on the command line, so they are not visible in `/proc`.
 - curl runs with `-q` (never reads `~/.curlrc`), so no inherited option can
-  redirect the request, weaken TLS, or attach the key to another URL.
+  redirect the request, weaken TLS, or attach the key to another URL. The
+  configured `baseUrl` is validated as a plain http(s) URL, so it cannot
+  inject curl directives or a non-http scheme.
+- The URL passed to the clipboard and browser is passed as a separate argument
+  (never interpolated into a shell string) and is restricted to `http(s)://`.
 - Remote strings (titles, error details) are stripped of markup and control
   characters before display, and rendered as plain text.
 - Responses are bounded at the source: curl's stdout and stderr pass through
