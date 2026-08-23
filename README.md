@@ -97,12 +97,21 @@ This deletes the plugin folder and its bar entry. Your API key file
 
 - The API key and any passcode you type are handed to `curl` through a config
   file on stdin — never on the command line, so they are not visible in `/proc`.
-- curl runs with `-q` (never reads `~/.curlrc`), so no inherited option can
-  redirect the request, weaken TLS, or attach the key to another URL. The
-  configured `baseUrl` is validated as a plain http(s) URL, so it cannot
-  inject curl directives or a non-http scheme.
-- The URL passed to the clipboard and browser is passed as a separate argument
-  (never interpolated into a shell string) and is restricted to `http(s)://`.
+- curl runs with `-q` (never reads `~/.curlrc`) and `--globoff`, so no inherited
+  option and no glob in a URL can redirect the request, weaken TLS, attach the
+  key to another URL, or fan one request out to several hosts.
+- `baseUrl` is validated to a single plain http(s) endpoint — `https` is
+  required unless the host is loopback, so credentials never cross the network
+  in cleartext; `{}`/`[]`/whitespace are rejected. An unusable value fails
+  closed (no request) rather than silently falling back to production.
+- The API key is read through a guarded process (regular file, not a symlink,
+  owned by you, first 4 KiB only), so a special or oversized file at the key
+  path can't be read into the shell. It must be a single printable token.
+- URLs handed to the clipboard/browser are passed as a separate argument (never
+  interpolated into a shell string) and restricted to `http(s)://`.
+- Any non-zero curl exit is treated as a failed request; a partial or truncated
+  body is never parsed as success, and a stale in-flight response can't
+  overwrite newer local state.
 - Remote strings (titles, error details) are stripped of markup and control
   characters before display, and rendered as plain text.
 - Responses are bounded at the source: curl's stdout and stderr pass through
