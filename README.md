@@ -40,8 +40,9 @@ Everything is already present on a stock Omarchy install:
 - `wl-copy` (wl-clipboard) — copy link
 - `omarchy-launch-browser` — open share / dashboard
 
-No services, installers, sudo, or remote builds. The plugin never writes
-outside the shell's own `shell.json` settings (and only when Omarchy asks it to).
+No background services, installers, elevated privileges, or remote builds.
+The plugin never writes outside the shell's own `shell.json` settings (and
+only when Omarchy asks it to).
 
 ## Usage
 
@@ -96,6 +97,10 @@ This deletes the plugin folder and its bar entry. Your API key file
 
 - The API key and any passcode you type are handed to `curl` through a config
   file on stdin — never on the command line, so they are not visible in `/proc`.
+- Responses are bounded: curl refuses bodies over 2 MiB, the plugin kills curl
+  if stdout/stderr exceed their caps while streaming, and the share list is
+  clamped (≤500 entries, every field length-checked) before it reaches the UI.
+  A broken or hostile `baseUrl` cannot grow the shell process.
 - Only bearer-token endpoints are used: `GET /api/shares/_mine`,
   `PATCH /api/shares/<slug>/passcode/_api`, `DELETE /api/shares/<slug>/_api`.
   The plugin cannot create keys or publish pages.

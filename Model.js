@@ -3,6 +3,20 @@
 
 var SOON_MS = 24 * 60 * 60 * 1000
 
+// Ceilings on what we accept from the network. baseUrl is user-configurable,
+// so a broken or hostile endpoint must not be able to grow the shell process:
+// curl refuses bodies over MAX_RESPONSE_BYTES, Service.qml kills curl if its
+// stdout/stderr exceed the caps while streaming, and normaliseShares bounds
+// the array and every field before the data reaches QML bindings.
+var MAX_RESPONSE_BYTES = 2 * 1024 * 1024   // ~40x a 100-share listing
+var MAX_STDERR_BYTES = 16 * 1024
+var MAX_SHARES = 500
+var MAX_SLUG = 64
+var MAX_URL = 2048
+var MAX_TITLE = 140                          // the backend's own limit
+var MAX_TIMESTAMP = 64
+var SLUG_RE = /^[A-Za-z0-9_-]+$/
+
 // curl is invoked with `write-out = "\n%{http_code}"`, so the last line of
 // stdout is the status and everything before it is the body.
 function parseCurlOutput(raw) {
@@ -24,6 +38,7 @@ function errorMessage(status, body) {
   var data = parseJson(body)
   if (data && typeof data.detail === "string" && data.detail !== "") return data.detail
   if (status === 0) return "Network error — is passpage.space reachable?"
+  if (status === 413) return "Response too large — refused"
   if (status === 401) return "API key rejected"
   if (status === 404) return "Share not found"
   return "HTTP " + status
@@ -46,24 +61,42 @@ function isExpiringSoon(share, nowMs) {
   return ms !== null && ms > nowMs && ms - nowMs <= SOON_MS
 }
 
-// Normalise the wire list into what the rows need, newest first.
+function boundedString(value, max) {
+  if (typeof value !== "string") return ""
+  return value.length > max ? value.slice(0, max) : value
+}
+
+function boundedCount(value) {
+  return typeof value === "number" && isFinite(value) && value > 0 ? Math.floor(value) : 0
+}
+
+function boundedUrl(value) {
+  var url = boundedString(value, MAX_URL)
+  return /^https?:\/\//.test(url) ? url : ""
+}
+
+// Normalise the wire list into what the rows need, newest first. Anything
+// malformed is dropped or clamped; the output is always safe to bind to.
 function normaliseShares(list) {
   if (!(list instanceof Array)) return []
   var out = []
-  for (var i = 0; i < list.length; i++) {
+  for (var i = 0; i < list.length && out.length < MAX_SHARES; i++) {
     var s = list[i]
-    if (!s || typeof s.slug !== "string" || s.slug === "") continue
+    if (!s || typeof s !== "object") continue
+    var slug = typeof s.slug === "string" ? s.slug : ""
+    if (slug === "" || slug.length > MAX_SLUG || !SLUG_RE.test(slug)) continue
+    var expires = boundedString(s.expires_at, MAX_TIMESTAMP)
     out.push({
-      slug: s.slug,
-      url: typeof s.url === "string" ? s.url : "",
-      title: typeof s.title === "string" ? s.title : "",
+      slug: slug,
+      url: boundedUrl(s.url),
+      title: boundedString(s.title, MAX_TITLE),
       has_passcode: s.has_passcode === true,
-      expires_at: typeof s.expires_at === "string" ? s.expires_at : null,
-      created_at: typeof s.created_at === "string" ? s.created_at : "",
-      view_count: typeof s.view_count === "number" ? s.view_count : 0,
+      expires_at: expires === "" ? null : expires,
+      created_at: boundedString(s.created_at, MAX_TIMESTAMP),
+      view_count: boundedCount(s.view_count),
       track_views: s.track_views === true,
-      file_count: typeof s.file_count === "number" ? s.file_count : 0,
-      size_bytes: typeof s.size_bytes === "number" ? s.size_bytes : 0
+      file_count: boundedCount(s.file_count),
+      size_bytes: boundedCount(s.size_bytes)
     })
   }
   out.sort(function(a, b) {
@@ -164,6 +197,7 @@ function curlConfig(opts) {
     "silent",
     "show-error",
     "max-time = " + (opts.timeoutSec || 15),
+    "max-filesize = " + MAX_RESPONSE_BYTES,
     "write-out = " + curlQuote("\\n%{http_code}")
   ]
   if (opts.method && opts.method !== "GET") lines.push("request = " + curlQuote(opts.method))
@@ -196,6 +230,8 @@ if (typeof module !== "undefined" && module.exports) {
     partition: partition, countExpiringSoon: countExpiringSoon, displayTitle: displayTitle,
     durationText: durationText, expiryText: expiryText, ageText: ageText, viewsText: viewsText,
     rowDetail: rowDetail, heroMeta: heroMeta, curlQuote: curlQuote, curlConfig: curlConfig,
-    listUrl: listUrl, deleteUrl: deleteUrl, passcodeUrl: passcodeUrl, trimBaseUrl: trimBaseUrl
+    listUrl: listUrl, deleteUrl: deleteUrl, passcodeUrl: passcodeUrl, trimBaseUrl: trimBaseUrl,
+    MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES, MAX_STDERR_BYTES: MAX_STDERR_BYTES, MAX_SHARES: MAX_SHARES,
+    MAX_TITLE: MAX_TITLE
   }
 }

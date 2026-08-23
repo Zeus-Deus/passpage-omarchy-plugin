@@ -53,6 +53,24 @@ test("normaliseShares drops junk and sorts newest first", () => {
   assert.equal(M.normaliseShares("nope").length, 0)
 })
 
+test("normaliseShares bounds everything from the wire", () => {
+  const huge = Array.from({ length: M.MAX_SHARES + 50 }, (_, i) => share({ slug: "s" + i }))
+  assert.equal(M.normaliseShares(huge).length, M.MAX_SHARES)
+  const [s] = M.normaliseShares([share({
+    title: "x".repeat(10000), url: "javascript:alert(1)", expires_at: "y".repeat(500),
+    view_count: 1e300, file_count: -5, size_bytes: NaN, slug: "ok_-1"
+  })])
+  assert.equal(s.title.length, M.MAX_TITLE)
+  assert.equal(s.url, "", "non-http url dropped")
+  assert.equal(s.expires_at.length, 64)
+  assert.equal(s.view_count, 1e300 >= 1 ? Math.floor(1e300) : 0)
+  assert.equal(s.file_count, 0)
+  assert.equal(s.size_bytes, 0)
+  assert.equal(M.normaliseShares([share({ slug: "../etc" }), share({ slug: "a".repeat(65) })]).length, 0,
+    "slugs outside the base64url alphabet or too long are dropped")
+  assert.equal(M.normaliseShares([1, "x", null, []]).length, 0)
+})
+
 test("partition and counts", () => {
   const list = [share({ slug: "a" }), share({ slug: "b", expires_at: "2026-08-21T00:00:00Z" }),
     share({ slug: "c", expires_at: "2026-08-21T20:00:00Z" })]
@@ -105,6 +123,7 @@ test("curlConfig keeps secrets off argv and escapes quotes", () => {
   // JSON escapes first ("→\", \→\\), then the curl-config escape doubles them.
   assert.ok(cfg.includes('data = "{\\"passcode\\":\\"hun\\\\\\"ter\\\\\\\\2\\"}"\n'), cfg)
   assert.ok(cfg.includes('write-out = "\\\\n%{http_code}"\n'), cfg)
+  assert.ok(cfg.includes("max-filesize = " + M.MAX_RESPONSE_BYTES + "\n"), cfg)
   assert.doesNotMatch(M.curlConfig({ url: "u", key: "k" }), /request|data =|Content-Type/)
 })
 
