@@ -29,8 +29,12 @@ mkdir -p ~/.config/passpage && chmod 700 ~/.config/passpage
 printf %s 'pp_…' > ~/.config/passpage/key && chmod 600 ~/.config/passpage/key
 ```
 
+Mode `600` (or `400`) is required — the plugin refuses to read a key file
+that group or others can access, or that is a symlink or not owned by you.
+
 The panel watches that file and picks the key up without a restart. While it
-is missing or rejected the bar glyph shows a `!` badge and the panel says why.
+is missing, unsafe (permissions/ownership), invalid, or rejected by the
+server, the bar glyph shows a `!` badge and the panel says why.
 
 ### Dependencies
 
@@ -68,7 +72,8 @@ omarchy-shell passpage toggle | open | close | refresh | status
 ```
 
 `status` returns JSON, e.g.
-`{"active":11,"expired":0,"expiringSoon":1,"error":"","keyMissing":false}`.
+`{"loaded":true,"active":11,"expired":0,"expiringSoon":1,"error":"",
+"keyMissing":false,"keyInvalid":false,"keyUnsafe":false}`.
 
 ## Configure
 
@@ -102,16 +107,27 @@ This deletes the plugin folder and its bar entry. Your API key file
   key to another URL, or fan one request out to several hosts.
 - `baseUrl` is validated to a single plain http(s) endpoint — `https` is
   required unless the host is loopback, so credentials never cross the network
-  in cleartext; `{}`/`[]`/whitespace are rejected. An unusable value fails
-  closed (no request) rather than silently falling back to production.
-- The API key is read through a guarded process (regular file, not a symlink,
-  owned by you, first 4 KiB only), so a special or oversized file at the key
-  path can't be read into the shell. It must be a single printable token.
+  in cleartext; `{}`/`[]`/whitespace/`?`/`#` are rejected. A blank value falls
+  back to the default; any other unusable value fails closed (no request)
+  rather than silently falling back to production.
+- Requests to loopback hosts never transit an `http_proxy`/`HTTPS_PROXY` from
+  the environment (`noproxy = localhost,127.0.0.1,::1` in every curl config),
+  so a proxy can never see the bearer token of a local-dev request in
+  cleartext. Remote https requests still honour your proxy settings.
+- The API key is read through a guarded, time-bounded process: regular file,
+  not a symlink, owned by you, mode `600`/`400` (any group/other access bit
+  rejects the file), first 4 KiB only, read under a 2-second `timeout`. A
+  special, world-readable, or oversized file at the key path can't be read
+  into the shell or hang it. The key must be a single printable token; a
+  missing, unsafe, or invalid key file is surfaced distinctly (`!` badge,
+  panel explanation) and no share data is shown without a usable key.
 - URLs handed to the clipboard/browser are passed as a separate argument (never
   interpolated into a shell string) and restricted to `http(s)://`.
 - Any non-zero curl exit is treated as a failed request; a partial or truncated
   body is never parsed as success, and a stale in-flight response can't
-  overwrite newer local state.
+  overwrite newer local state. Changing `baseUrl` or the key file clears the
+  cached share list immediately, so rows from the old server or credential
+  can never drive actions against the new one.
 - Remote strings (titles, error details) are stripped of markup and control
   characters before display, and rendered as plain text.
 - Responses are bounded at the source: curl's stdout and stderr pass through
