@@ -725,6 +725,7 @@ Panel {
         anchors.rightMargin: Style.space(6)
         anchors.verticalCenter: parent.verticalCenter
         password: true
+        maximumLength: 256
         placeholderText: row.share && row.share.has_passcode ? "New passcode — leave empty to remove" : "Passcode"
         foreground: root.foreground
         horizontalPadding: Style.spacing.controlGap

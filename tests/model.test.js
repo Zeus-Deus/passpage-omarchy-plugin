@@ -115,7 +115,7 @@ test("heroMeta states", () => {
 })
 
 test("curlConfig keeps secrets off argv and escapes quotes", () => {
-  const cfg = M.curlConfig({ url: M.passcodeUrl("https://passpage.space/", "a-b"), key: 'pp_k"ey',
+  const cfg = M.curlConfig({ url: M.passcodeUrl("https://passpage.space", "a-b"), key: 'pp_k"ey',
     method: "PATCH", json: { passcode: 'hun"ter\\2' } })
   assert.match(cfg, /^url = "https:\/\/passpage\.space\/api\/shares\/a-b\/passcode\/_api"\n/)
   assert.match(cfg, /header = "Authorization: Bearer pp_k\\"ey"\n/)
@@ -137,6 +137,7 @@ test("sanitizeText neutralises markup and control chars", () => {
 
 test("sanitizeKey accepts one printable token only", () => {
   assert.equal(M.sanitizeKey("  pp_abc123\n"), "pp_abc123")
+  assert.equal(M.sanitizeKey("pp_ab cd"), "", "internal whitespace rejected, not stripped")
   assert.equal(M.sanitizeKey("pp_a\u0007bc"), "")
   assert.equal(M.sanitizeKey("x".repeat(513)), "")
   assert.equal(M.sanitizeKey("héllo"), "")
@@ -144,20 +145,30 @@ test("sanitizeKey accepts one printable token only", () => {
 })
 
 test("urls", () => {
-  assert.equal(M.listUrl(""), "https://passpage.space/api/shares/_mine")
+  assert.equal(M.listUrl("https://passpage.space"), "https://passpage.space/api/shares/_mine")
   assert.equal(M.deleteUrl("http://127.0.0.1:8000", "x/y"), "http://127.0.0.1:8000/api/shares/x%2Fy/_api")
-  assert.equal(M.trimBaseUrl("https://a.b///"), "https://a.b")
+  assert.equal(M.passcodeUrl("https://passpage.space", "a-b"), "https://passpage.space/api/shares/a-b/passcode/_api")
 })
 
-test("trimBaseUrl rejects non-http, whitespace, and config-injection", () => {
-  assert.equal(M.trimBaseUrl("https://passpage.space"), "https://passpage.space")
-  assert.equal(M.trimBaseUrl("http://127.0.0.1:8000"), "http://127.0.0.1:8000")
-  const D = "https://passpage.space"
-  assert.equal(M.trimBaseUrl("https://x\nupload-file = /home/u/.config/passpage/key"), D, "newline injection rejected")
-  assert.equal(M.trimBaseUrl("file:///etc/passwd"), D)
-  assert.equal(M.trimBaseUrl("javascript:alert(1)"), D)
-  assert.equal(M.trimBaseUrl("ftp://x"), D)
-  assert.equal(M.trimBaseUrl("https:///"), D)
-  assert.equal(M.trimBaseUrl(""), D)
-  assert.equal(M.trimBaseUrl("  https://a.b  "), "https://a.b")
+test("MAX_PASSCODE is a sane cap", () => {
+  assert.equal(M.MAX_PASSCODE, 256)
+})
+
+test("validatedBaseUrl accepts only a single plain http(s) endpoint", () => {
+  assert.equal(M.validatedBaseUrl("https://passpage.space"), "https://passpage.space")
+  assert.equal(M.validatedBaseUrl("https://passpage.space///"), "https://passpage.space")
+  assert.equal(M.validatedBaseUrl("  https://a.b  "), "https://a.b")
+  // loopback may use http; anything else may not (no cleartext credentials)
+  assert.equal(M.validatedBaseUrl("http://127.0.0.1:8000"), "http://127.0.0.1:8000")
+  assert.equal(M.validatedBaseUrl("http://localhost:5173/base"), "http://localhost:5173/base")
+  assert.equal(M.validatedBaseUrl("http://evil.example.com"), "", "cleartext to non-loopback rejected")
+  // rejections that would otherwise be exploitable
+  assert.equal(M.validatedBaseUrl("https://x\nupload-file = /home/u/.config/passpage/key"), "", "newline injection")
+  assert.equal(M.validatedBaseUrl("http://{evil.com,passpage.space}"), "", "curl glob braces")
+  assert.equal(M.validatedBaseUrl("http://127.0.0.1/[1-9]"), "", "curl glob brackets")
+  assert.equal(M.validatedBaseUrl("file:///etc/passwd"), "")
+  assert.equal(M.validatedBaseUrl("javascript:alert(1)"), "")
+  assert.equal(M.validatedBaseUrl("ftp://x"), "")
+  assert.equal(M.validatedBaseUrl("https:///"), "")
+  assert.equal(M.validatedBaseUrl(""), "")
 })

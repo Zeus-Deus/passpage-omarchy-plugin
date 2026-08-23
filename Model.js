@@ -15,6 +15,7 @@ var MAX_SLUG = 64
 var MAX_URL = 2048
 var MAX_TITLE = 140                          // the backend's own limit
 var MAX_TIMESTAMP = 64
+var MAX_PASSCODE = 256
 var SLUG_RE = /^[A-Za-z0-9_-]+$/
 
 // curl is invoked with `write-out = "\n%{http_code}"`, so the last line of
@@ -78,9 +79,11 @@ function sanitizeText(value, max) {
   return boundedString(value, max).replace(/[<>&\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
 }
 
-// The API key travels into an HTTP header: one printable token or nothing.
+// The API key travels into an HTTP header: exactly one printable token. Only
+// surrounding whitespace is trimmed — internal whitespace means the file is
+// not a key, so reject it rather than silently rewrite it into a different key.
 function sanitizeKey(value) {
-  var key = String(value || "").replace(/\s+/g, "")
+  var key = String(value || "").trim()
   return key.length > 0 && key.length <= 512 && /^[\x21-\x7e]+$/.test(key) ? key : ""
 }
 
@@ -226,18 +229,26 @@ function curlConfig(opts) {
   return lines.join("\n") + "\n"
 }
 
-// Reject anything that is not a plain http(s) URL: an embedded newline would
-// inject extra directives into the curl config, and a non-http scheme could
-// smuggle file:. baseUrl comes from user settings, but a user can be talked
-// into pasting a hostile "mirror" URL, so validate it rather than trust it.
-function trimBaseUrl(url) {
+// Validate the configured base URL to a single plain http(s) endpoint, or ""
+// if unusable (callers fail closed). Defends several things at once:
+//  - no whitespace/newline  -> can't inject extra curl-config directives
+//  - no { } [ ]             -> curl globbing can't fan one request into many
+//                              (which would send the bearer token to each host)
+//  - http only for loopback -> credentials never cross the network in cleartext
+//  - http(s) scheme only    -> no file:/javascript: smuggling
+function validatedBaseUrl(url) {
   var s = String(url || "").trim()
   while (s.length > 0 && s[s.length - 1] === "/") s = s.slice(0, -1)
-  return /^https?:\/\/[^\s]+$/.test(s) ? s : "https://passpage.space"
+  var m = /^(https?):\/\/([^\/\s{}\[\]]+)(\/[^\s{}\[\]]*)?$/.exec(s)
+  if (!m) return ""
+  var host = m[2].toLowerCase().replace(/:\d+$/, "")
+  var isLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]"
+  if (m[1] === "http" && !isLoopback) return ""
+  return s
 }
 
 function apiUrl(baseUrl, path) {
-  return trimBaseUrl(baseUrl) + path
+  return String(baseUrl || "") + path
 }
 
 function listUrl(baseUrl) { return apiUrl(baseUrl, "/api/shares/_mine") }
@@ -252,9 +263,9 @@ if (typeof module !== "undefined" && module.exports) {
     partition: partition, countExpiringSoon: countExpiringSoon, displayTitle: displayTitle,
     durationText: durationText, expiryText: expiryText, ageText: ageText, viewsText: viewsText,
     rowDetail: rowDetail, heroMeta: heroMeta, curlQuote: curlQuote, curlConfig: curlConfig,
-    listUrl: listUrl, deleteUrl: deleteUrl, passcodeUrl: passcodeUrl, trimBaseUrl: trimBaseUrl,
+    listUrl: listUrl, deleteUrl: deleteUrl, passcodeUrl: passcodeUrl, validatedBaseUrl: validatedBaseUrl,
     sanitizeText: sanitizeText, sanitizeKey: sanitizeKey,
     MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES, MAX_STDERR_BYTES: MAX_STDERR_BYTES, MAX_SHARES: MAX_SHARES,
-    MAX_TITLE: MAX_TITLE
+    MAX_TITLE: MAX_TITLE, MAX_PASSCODE: MAX_PASSCODE, boundedUrl: boundedUrl
   }
 }

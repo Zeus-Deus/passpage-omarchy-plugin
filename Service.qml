@@ -8,6 +8,9 @@ import "Model.js" as Model
 // Every request is one curl run that reads its arguments from a config file
 // on stdin, so the key and passcodes never reach argv. State here is plain
 // JSON snapshots — rows bind to `active` / `expired`, never to live objects.
+//
+// Threat model: baseUrl is user-configurable, so the whole HTTP response is
+// treated as attacker-controlled, and so is a maliciously-pointed endpoint.
 Item {
   id: root
 
@@ -30,20 +33,33 @@ Item {
   property string apiKey: ""
   property bool keyChecked: false
   property bool keyInvalid: false    // file exists but is not one printable token
-  readonly property bool keyMissing: keyChecked && apiKey === ""
-  readonly property string keyPath: Quickshell.env("HOME") + "/.config/passpage/key"
 
-  readonly property string baseUrl: Model.trimBaseUrl(setting("baseUrl", "https://passpage.space"))
+  readonly property bool keyMissing: keyChecked && apiKey === "" && !keyInvalid
+
+  // baseUrl is validated to a single plain http(s) URL (https required unless
+  // the host is loopback). An empty result means the configured value is
+  // unusable — we fail closed rather than silently talk to production.
+  readonly property string baseUrlSetting: String(setting("baseUrl", "https://passpage.space"))
+  readonly property string baseUrl: Model.validatedBaseUrl(baseUrlSetting)
+  readonly property bool baseUrlInvalid: baseUrl === "" && baseUrlSetting.trim() !== ""
+
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 300, 30, 3600)
-  readonly property bool busy: listProcess.running || actionProcess.running
+  readonly property bool busy: keyProcess.running || listProcess.running || actionProcess.running
   readonly property int activeCount: active.length
   readonly property int expiredCount: expired.length
+
+  // Bumped whenever credentials, target, or server-side state change, so a
+  // list response that started under stale conditions is discarded instead of
+  // overwriting newer local state (e.g. a delete that already happened).
+  property int generation: 0
 
   // Ticks once a minute so "expires in 45m" stays honest without a refetch.
   property double nowMs: Date.now()
 
   signal sharesUpdated()
   signal actionFinished(string kind, string slug, bool ok)
+
+  onBaseUrlChanged: generation++
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -69,15 +85,23 @@ Item {
     return null
   }
 
+  // Re-read the key (bounded, guarded) then list. The key read replaces a
+  // FileView so a hostile file at the fixed path can't be slurped whole.
   function refresh() {
-    if (listProcess.running) return
-    keyFile.reload()
-    if (apiKey === "") {
-      keyChecked = true
+    if (keyProcess.running || listProcess.running) return
+    if (baseUrlInvalid) {
       loading = false
+      error = "Configured passpage URL is invalid"
       return
     }
+    keyProcess.pendingList = true
+    keyProcess.running = true
+  }
+
+  function startList() {
+    if (apiKey === "") { loading = false; return }
     loading = true
+    listProcess.generation = generation
     listProcess.config = Model.curlConfig({ url: Model.listUrl(baseUrl), key: apiKey })
     listProcess.running = true
   }
@@ -95,10 +119,11 @@ Item {
   }
 
   function copyLink(share) {
-    if (!share || !share.url) return
+    var url = share ? Model.boundedUrl(share.url) : ""
+    if (url === "") return
     // URL as a positional arg ($1), never interpolated into the script text —
     // no quoting to get wrong even though share.url is endpoint-controlled.
-    Quickshell.execDetached(["bash", "-c", "printf %s \"$1\" | wl-copy", "wl-copy", share.url])
+    Quickshell.execDetached(["bash", "-c", "printf %s \"$1\" | wl-copy", "wl-copy", url])
     // Feedback lives on the row's copy button (it turns into a check), not in
     // the status line — less noise for the most common action.
     copiedSlug = share.slug
@@ -122,6 +147,7 @@ Item {
   function setPasscode(share, passcode) {
     if (!share || actionProcess.running || apiKey === "") return
     var value = String(passcode || "")
+    if (value.length > Model.MAX_PASSCODE) value = value.slice(0, Model.MAX_PASSCODE)
     startAction(value === "" ? "unlock" : "lock", share.slug, Model.curlConfig({
       url: Model.passcodeUrl(baseUrl, share.slug), key: apiKey, method: "PATCH",
       json: { passcode: value === "" ? null : value }
@@ -143,15 +169,27 @@ Item {
     actionProcess.running = true
   }
 
-  // head closing the pipe kills curl with SIGPIPE (141) under pipefail; 63 is
-  // curl's own max-filesize. The length check is a belt-and-braces fallback.
+  // head closing the pipe makes curl fail its write (exit 23) under pipefail;
+  // 63 is curl's own max-filesize, 141 a raw SIGPIPE. The length check is a
+  // belt-and-braces fallback for any of them.
   function oversized(exitCode, output) {
-    return exitCode === 141 || exitCode === 63 || String(output || "").length >= Model.MAX_RESPONSE_BYTES
+    return exitCode === 23 || exitCode === 63 || exitCode === 141
+      || String(output || "").length >= Model.MAX_RESPONSE_BYTES
   }
 
-  function finishList(exitCode, output, stderr) {
+  function networkError(stderr) {
+    var text = Model.sanitizeText(String(stderr || ""), 160)
+    return text === "" ? Model.errorMessage(0, "") : "Network error — " + text
+  }
+
+  function finishList(exitCode, output, stderr, requestGeneration) {
     loading = false
     if (oversized(exitCode, output)) { error = Model.errorMessage(413, ""); return }
+    // Any other non-zero exit = truncated/failed transfer; never trust a
+    // partial body (a timed-out `[` must not read as an empty list).
+    if (exitCode !== 0) { error = networkError(stderr); return }
+    // Conditions changed while this was in flight — the data is stale, redo.
+    if (requestGeneration !== generation) { Qt.callLater(root.refresh); return }
     var result = Model.parseCurlOutput(output)
     if (result.status === 200) {
       var data = Model.parseJson(result.body)
@@ -167,13 +205,17 @@ Item {
       return
     }
     error = Model.errorMessage(result.status, result.status === 0 ? "" : result.body)
-    if (result.status === 0 && String(stderr || "").trim() !== "") error = "Network error — " + String(stderr).trim()
   }
 
-  function finishAction(kind, slug, exitCode, output) {
+  function finishAction(kind, slug, exitCode, output, stderr) {
     busySlug = ""
     if (oversized(exitCode, output)) {
       showActionError(Model.errorMessage(413, ""))
+      actionFinished(kind, slug, false)
+      return
+    }
+    if (exitCode !== 0) {
+      showActionError(networkError(stderr))
       actionFinished(kind, slug, false)
       return
     }
@@ -186,6 +228,8 @@ Item {
       actionFinished(kind, slug, false)
       return
     }
+    // The server state changed; invalidate any in-flight list.
+    generation++
     if (kind === "delete") {
       var next = []
       for (var i = 0; i < shares.length; i++) if (shares[i].slug !== slug) next.push(shares[i])
@@ -193,12 +237,17 @@ Item {
       showStatus("Deleted " + label)
     } else {
       var updated = updateForSlug(result.body, slug)
-      var replaced = []
-      for (var j = 0; j < shares.length; j++) {
-        var s = shares[j]
-        replaced.push(s.slug === slug && updated ? updated : s)
+      if (updated) {
+        var replaced = []
+        for (var j = 0; j < shares.length; j++) {
+          var s = shares[j]
+          replaced.push(s.slug === slug ? updated : s)
+        }
+        shares = replaced
+      } else {
+        // Success server-side but the body wasn't usable — reconcile by refetch.
+        Qt.callLater(root.refresh)
       }
-      shares = replaced
       showStatus((kind === "lock" ? "Passcode set on " : "Passcode removed from ") + label)
     }
     recompute()
@@ -206,52 +255,43 @@ Item {
     actionFinished(kind, slug, true)
   }
 
-  FileView {
-    id: keyFile
-    path: root.keyPath
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: {
-      var wasMissing = root.apiKey === ""
-      // A real key is ~46 chars; anything large is not ours (and guards against
-      // a huge/garbage file at the fixed key path growing the shell).
-      var raw = String(text() || "")
-      if (raw.length > 4096) raw = ""
-      root.apiKey = Model.sanitizeKey(raw)
-      root.keyInvalid = root.apiKey === "" && raw.trim() !== ""
+  // Guarded key read: regular file, not a symlink, owned by us, first 4 KiB
+  // only. This is what lets us drop a FileView — a FileView would slurp the
+  // whole file (a fifo, /dev/zero, or a huge file) into the shell before any
+  // check ran. The path is fixed; only argv-free stdin/stdout are used.
+  Process {
+    id: keyProcess
+    property bool pendingList: false
+    command: ["bash", "-c",
+      "f=\"$HOME/.config/passpage/key\"; if [ -f \"$f\" ] && [ ! -L \"$f\" ] && [ -O \"$f\" ]; then head -c 4096 -- \"$f\"; fi"]
+    stdout: StdioCollector { id: keyOut; waitForEnd: true }
+    onExited: function(exitCode) {
+      var raw = String(keyOut.text || "")
+      var hadKey = root.apiKey !== ""
+      var next = Model.sanitizeKey(raw)
+      root.keyInvalid = next === "" && raw.trim() !== ""
+      if (next !== root.apiKey) { root.apiKey = next; root.generation++ }
       root.keyChecked = true
-      if (root.apiKey !== "" && (wasMissing || root.error !== "")) Qt.callLater(root.refresh)
-    }
-    onLoadFailed: {
-      root.apiKey = ""
-      root.keyInvalid = false
-      root.keyChecked = true
+      if (pendingList) {
+        pendingList = false
+        if (root.apiKey !== "") root.startList()
+        else { root.loading = false; if (root.keyInvalid) root.error = "" }
+      }
     }
   }
 
-  // The response ceiling lives outside the shell process: curl's stdout and
-  // stderr each pass through `head -c`, so the bytes that reach Quickshell
-  // physically cannot exceed the caps. When head closes early, curl dies on
-  // SIGPIPE and the trailing status line never arrives — finish*() treats a
-  // body at the cap as "too large". (curl's own max-filesize in the config
-  // only helps when the server announces a length; a chunked stream walks
-  // straight past it, and Qt-side parsers buffer before they emit.)
-  // `-q` must be curl's first argument: it stops ~/.curlrc from being read,
-  // where an inherited `url`, `upload-file` or `insecure` line would receive
-  // our bearer header, exfiltrate files, or weaken TLS.
-  //
-  // stdout/stderr each pass through `head -c` so the bytes reaching the shell
-  // are capped at the producer. With `pipefail`, when head hits the cap and
-  // closes the pipe curl dies on SIGPIPE and the pipeline exits 141 (or 63 if
-  // curl's own max-filesize tripped first) — that is how finish*() detects an
-  // oversized response, independent of the body's character encoding.
+  // The response ceiling lives outside the shell process. `-q` (first arg)
+  // ignores ~/.curlrc; `--globoff` stops `{}`/`[]` in a hostile baseUrl from
+  // fanning one request into many (which would send the bearer token to every
+  // globbed host). stdout/stderr each pass through `head -c`, so with pipefail
+  // an oversized body makes curl fail its write and the pipeline exits 23/141.
   readonly property var curlCommand: ["bash", "-c",
-    "set -o pipefail; exec 2> >(head -c " + Model.MAX_STDERR_BYTES + " >&2); exec curl -q --config - | head -c " + Model.MAX_RESPONSE_BYTES]
+    "set -o pipefail; exec 2> >(head -c " + Model.MAX_STDERR_BYTES + " >&2); exec curl -q --globoff --config - | head -c " + Model.MAX_RESPONSE_BYTES]
 
   Process {
     id: listProcess
     property string config: ""
+    property int generation: 0
     command: root.curlCommand
     stdinEnabled: true
     stdout: StdioCollector { id: listOut; waitForEnd: true }
@@ -263,7 +303,7 @@ Item {
       stdinEnabled = false
       stdinEnabled = true
     }
-    onExited: function(exitCode) { root.finishList(exitCode, listOut.text, listErr.text) }
+    onExited: function(exitCode) { root.finishList(exitCode, listOut.text, listErr.text, generation) }
   }
 
   Process {
@@ -274,7 +314,7 @@ Item {
     command: root.curlCommand
     stdinEnabled: true
     stdout: StdioCollector { id: actionOut; waitForEnd: true }
-    stderr: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { id: actionErr; waitForEnd: true }
     onRunningChanged: if (!running) config = ""
     onStarted: {
       write(config)
@@ -282,7 +322,7 @@ Item {
       stdinEnabled = false
       stdinEnabled = true
     }
-    onExited: function(exitCode) { root.finishAction(kind, slug, exitCode, actionOut.text) }
+    onExited: function(exitCode) { root.finishAction(kind, slug, exitCode, actionOut.text, actionErr.text) }
   }
 
   Timer {
@@ -297,7 +337,8 @@ Item {
     onTriggered: { root.actionStatus = ""; root.actionError = "" }
   }
 
-  // Background poll keeps the bar count honest while the panel is closed.
+  // Background poll keeps the bar count honest while the panel is closed, and
+  // re-reads the key so a freshly-saved key is picked up within one interval.
   Timer {
     interval: root.refreshIntervalSec * 1000
     running: true
@@ -311,12 +352,5 @@ Item {
     running: true
     repeat: true
     onTriggered: root.recompute()
-  }
-
-  // The first FileView read can race shell startup; one delayed retry covers it.
-  Timer {
-    interval: 1500
-    running: true
-    onTriggered: if (!root.loaded && !listProcess.running) root.refresh()
   }
 }
