@@ -24,6 +24,7 @@ Item {
   property string actionStatus: ""   // transient feedback: "Link copied", …
   property string actionError: ""    // transient action failure
   property string busySlug: ""       // share with an in-flight delete/passcode
+  property string copiedSlug: ""     // row whose copy button briefly shows a check
 
   // Key state
   property string apiKey: ""
@@ -95,7 +96,10 @@ Item {
   function copyLink(share) {
     if (!share || !share.url) return
     Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(share.url) + " | wl-copy"])
-    showStatus("Link copied — " + Model.displayTitle(share))
+    // Feedback lives on the row's copy button (it turns into a check), not in
+    // the status line — less noise for the most common action.
+    copiedSlug = share.slug
+    copiedTimer.restart()
   }
 
   function openInBrowser(share) {
@@ -232,6 +236,12 @@ Item {
       stdinEnabled = true
     }
     onExited: function(exitCode) { root.finishAction(kind, slug, actionOut.text) }
+  }
+
+  Timer {
+    id: copiedTimer
+    interval: 1400
+    onTriggered: root.copiedSlug = ""
   }
 
   Timer {

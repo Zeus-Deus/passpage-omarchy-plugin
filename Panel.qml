@@ -585,6 +585,7 @@ Panel {
     readonly property string slug: share ? String(share.slug || "") : ""
     readonly property bool editing: root.editingSlug === slug
     readonly property bool isBusy: passpage.busySlug === slug
+    readonly property bool copied: passpage.copiedSlug === slug
     readonly property bool soon: share ? Model.isExpiringSoon(share, passpage.nowMs) : false
     readonly property string title: Model.displayTitle(share)
     readonly property string detail: share ? Model.rowDetail(share, passpage.nowMs) : ""
@@ -653,9 +654,10 @@ Panel {
 
       PanelActionButton {
         visible: row.isActive
-        iconText: "󰆏"
-        tooltipText: "Copy link (c)"
-        foreground: root.foreground
+        iconText: row.copied ? "󰄬" : "󰆏"
+        tooltipText: row.copied ? "Copied" : "Copy link (c)"
+        foreground: row.copied ? Color.accent : root.foreground
+        hoverColor: row.copied ? Color.accent : root.foreground
         fontFamily: root.fontFamily
         enabled: !row.isBusy
         Layout.alignment: Qt.AlignVCenter
