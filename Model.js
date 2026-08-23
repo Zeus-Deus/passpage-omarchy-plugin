@@ -93,6 +93,9 @@ function boundedCount(value) {
 
 function boundedUrl(value) {
   var url = boundedString(value, MAX_URL)
+  // No whitespace or control characters (including NUL and newlines) — these
+  // URLs are handed to wl-copy and the browser as argv.
+  if (/[\s\u0000-\u001f\u007f]/.test(url)) return ""
   return /^https?:\/\//.test(url) ? url : ""
 }
 
@@ -215,6 +218,10 @@ function curlConfig(opts) {
     "url = " + curlQuote(opts.url),
     "header = " + curlQuote("Authorization: Bearer " + opts.key),
     "header = " + curlQuote("Accept: application/json"),
+    // Loopback requests must never transit an http(s)_proxy from the
+    // environment — the Bearer header would cross it in cleartext. Remote
+    // https requests still honour any configured proxy.
+    "noproxy = " + curlQuote("localhost,127.0.0.1,::1"),
     "silent",
     "show-error",
     "max-time = " + (opts.timeoutSec || 15),
@@ -236,10 +243,13 @@ function curlConfig(opts) {
 //                              (which would send the bearer token to each host)
 //  - http only for loopback -> credentials never cross the network in cleartext
 //  - http(s) scheme only    -> no file:/javascript: smuggling
+//  - no ? or #              -> a query/fragment would make the API paths we
+//                              append (/api/shares/...) land in the wrong part
+//                              of the URL
 function validatedBaseUrl(url) {
   var s = String(url || "").trim()
   while (s.length > 0 && s[s.length - 1] === "/") s = s.slice(0, -1)
-  var m = /^(https?):\/\/([^\/\s{}\[\]]+)(\/[^\s{}\[\]]*)?$/.exec(s)
+  var m = /^(https?):\/\/([^\/\s{}\[\]?#]+)(\/[^\s{}\[\]?#]*)?$/.exec(s)
   if (!m) return ""
   var host = m[2].toLowerCase().replace(/:\d+$/, "")
   var isLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]"

@@ -33,15 +33,21 @@ Item {
   property string apiKey: ""
   property bool keyChecked: false
   property bool keyInvalid: false    // file exists but is not one printable token
+  property bool keyUnsafe: false     // file exists but fails a safety guard (perms/owner/type)
 
-  readonly property bool keyMissing: keyChecked && apiKey === "" && !keyInvalid
+  readonly property bool keyMissing: keyChecked && apiKey === "" && !keyInvalid && !keyUnsafe
 
   // baseUrl is validated to a single plain http(s) URL (https required unless
   // the host is loopback). An empty result means the configured value is
   // unusable — we fail closed rather than silently talk to production.
-  readonly property string baseUrlSetting: String(setting("baseUrl", "https://passpage.space"))
+  // A blank or whitespace-only setting is treated like unset (fall back to
+  // the default) rather than half-classified as an invalid URL.
+  readonly property string baseUrlSetting: {
+    var v = String(setting("baseUrl", "https://passpage.space"))
+    return v.trim() === "" ? "https://passpage.space" : v
+  }
   readonly property string baseUrl: Model.validatedBaseUrl(baseUrlSetting)
-  readonly property bool baseUrlInvalid: baseUrl === "" && baseUrlSetting.trim() !== ""
+  readonly property bool baseUrlInvalid: baseUrl === ""
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 300, 30, 3600)
   readonly property bool busy: keyProcess.running || listProcess.running || actionProcess.running
@@ -59,7 +65,14 @@ Item {
   signal sharesUpdated()
   signal actionFinished(string kind, string slug, bool ok)
 
-  onBaseUrlChanged: generation++
+  // Target changed: stale rows from the old server must never drive delete or
+  // passcode actions against the new one. generation++ also discards any
+  // in-flight response that started under the old target.
+  onBaseUrlChanged: {
+    generation++
+    clearShares()
+    Qt.callLater(root.refresh)
+  }
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -78,6 +91,18 @@ Item {
     active = parts.active
     expired = parts.expired
     soonCount = Model.countExpiringSoon(parts.active, nowMs)
+  }
+
+  // Drop all share-derived state — used when the credential or target
+  // changes, so stale rows can never feed actions in the new context.
+  function clearShares() {
+    shares = []
+    active = []
+    expired = []
+    soonCount = 0
+    loaded = false
+    error = ""
+    sharesUpdated()
   }
 
   function shareBySlug(slug) {
@@ -255,27 +280,49 @@ Item {
     actionFinished(kind, slug, true)
   }
 
-  // Guarded key read: regular file, not a symlink, owned by us, first 4 KiB
-  // only. This is what lets us drop a FileView — a FileView would slurp the
-  // whole file (a fifo, /dev/zero, or a huge file) into the shell before any
-  // check ran. The path is fixed; only argv-free stdin/stdout are used.
+  // Guarded key read: regular file, not a symlink, owned by us, mode 600/400
+  // (any group/other access bit rejects it), first 4 KiB only, and the read
+  // itself runs under `timeout 2` so a file swapped for a blocking special
+  // file between check and read can never hang this process (which would
+  // permanently block refresh()). The first output line is a marker —
+  // "ok" / "unsafe" / "missing" — so the UI can tell a missing file from an
+  // unsafe one; the key bytes follow only after "ok". The path is fixed and
+  // secrets travel over stdout only, never argv.
   Process {
     id: keyProcess
     property bool pendingList: false
     command: ["bash", "-c",
-      "f=\"$HOME/.config/passpage/key\"; if [ -f \"$f\" ] && [ ! -L \"$f\" ] && [ -O \"$f\" ]; then head -c 4096 -- \"$f\"; fi"]
+      "f=\"$HOME/.config/passpage/key\"; if [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; then echo missing; exit 0; fi; if [ -f \"$f\" ] && [ ! -L \"$f\" ] && [ -O \"$f\" ]; then m=$(stat -c %a -- \"$f\" 2>/dev/null); case \"$m\" in *00) echo ok; timeout 2 head -c 4096 -- \"$f\";; *) echo unsafe;; esac; else echo unsafe; fi"]
     stdout: StdioCollector { id: keyOut; waitForEnd: true }
     onExited: function(exitCode) {
-      var raw = String(keyOut.text || "")
-      var hadKey = root.apiKey !== ""
-      var next = Model.sanitizeKey(raw)
-      root.keyInvalid = next === "" && raw.trim() !== ""
-      if (next !== root.apiKey) { root.apiKey = next; root.generation++ }
+      var out = String(keyOut.text || "")
+      var nl = out.indexOf("\n")
+      var marker = (nl === -1 ? out : out.slice(0, nl)).trim()
+      var raw = nl === -1 ? "" : out.slice(nl + 1)
+      var next = ""
+      if (marker === "ok") {
+        root.keyUnsafe = false
+        next = Model.sanitizeKey(raw)
+        root.keyInvalid = next === "" && raw.trim() !== ""
+      } else {
+        // "missing", "unsafe", or anything unexpected (script failure):
+        // no usable key. Unknown output fails closed as unsafe.
+        root.keyUnsafe = marker !== "missing"
+        root.keyInvalid = false
+      }
+      if (next !== root.apiKey) {
+        // Credential changed (including to none): stale rows must never
+        // drive actions under the new credential. In-flight list responses
+        // are additionally discarded by the generation bump.
+        root.apiKey = next
+        root.generation++
+        root.clearShares()
+      }
       root.keyChecked = true
       if (pendingList) {
         pendingList = false
         if (root.apiKey !== "") root.startList()
-        else { root.loading = false; if (root.keyInvalid) root.error = "" }
+        else { root.loading = false; root.error = "" }
       }
     }
   }

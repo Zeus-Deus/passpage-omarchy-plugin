@@ -34,13 +34,18 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color hoverFill: Style.hoverFillFor(foreground, Color.accent)
   readonly property bool headerHasCursor: cursorActive && focusSection === "header"
-  readonly property bool attention: passpage.keyMissing || passpage.error !== ""
-  readonly property bool showExpired: passpage.expired.length > 0
-  readonly property string heroMeta: passpage.keyInvalid ? "API key file looks invalid" : Model.heroMeta({
+  // No usable key (missing, unsafe, or invalid) hides share data and counts
+  // entirely — nothing key-derived may look alive without a key behind it.
+  readonly property bool keyUsable: !passpage.keyMissing && !passpage.keyInvalid && !passpage.keyUnsafe
+  readonly property bool attention: passpage.keyMissing || passpage.keyInvalid || passpage.keyUnsafe || passpage.error !== ""
+  readonly property bool showExpired: root.keyUsable && passpage.expired.length > 0
+  readonly property string heroMeta: passpage.keyUnsafe
+    ? "Key file is unsafe \u2014 check permissions"
+    : passpage.keyInvalid ? "API key file looks invalid" : Model.heroMeta({
     keyMissing: passpage.keyMissing, error: passpage.error, loading: passpage.loading,
     activeCount: passpage.activeCount, expiredCount: passpage.expiredCount, soonCount: passpage.soonCount
   })
-  readonly property string countText: passpage.loaded && !passpage.keyMissing && passpage.activeCount > 0 ? String(passpage.activeCount) : ""
+  readonly property string countText: passpage.loaded && root.keyUsable && passpage.activeCount > 0 ? String(passpage.activeCount) : ""
   readonly property string dashboardUrl: passpage.baseUrl + "/dashboard"
 
   function selectedShare() {
@@ -203,7 +208,13 @@ Panel {
   Service {
     id: passpage
     settings: root.settings
-    onSharesUpdated: root.ensureCursor()
+    onSharesUpdated: {
+      root.ensureCursor()
+      // A share can vanish under an open editor/dialog (refresh, delete
+      // elsewhere) — orphaned overlay state would block keyboard input.
+      if (root.editingSlug !== "" && !passpage.shareBySlug(root.editingSlug)) root.cancelPasscodeEditor()
+      if (root.pendingDelete && !passpage.shareBySlug(root.pendingDelete.slug)) root.closeConfirm()
+    }
     onActionFinished: function(kind, slug, ok) {
       if (ok && root.editingSlug === slug) root.cancelPasscodeEditor()
       if (root.pendingDelete && root.pendingDelete.slug === slug) root.closeConfirm()
@@ -220,7 +231,8 @@ Panel {
     function refresh(): string { passpage.refresh(); return "ok" }
     function status(): string {
       return JSON.stringify({ loaded: passpage.loaded, active: passpage.activeCount, expired: passpage.expiredCount,
-        expiringSoon: passpage.soonCount, error: passpage.error, keyMissing: passpage.keyMissing })
+        expiringSoon: passpage.soonCount, error: passpage.error, keyMissing: passpage.keyMissing,
+        keyInvalid: passpage.keyInvalid, keyUnsafe: passpage.keyUnsafe })
     }
   }
 
@@ -410,7 +422,7 @@ Panel {
 
           // Setup guidance when there is no key to use.
           CursorSurface {
-            visible: passpage.keyMissing || passpage.keyInvalid
+            visible: !root.keyUsable
             width: parent.width
             implicitHeight: setupInner.implicitHeight + Style.spacing.rowPaddingX * 2
             foreground: root.foreground
@@ -425,9 +437,11 @@ Panel {
 
               Text {
                 width: parent.width
-                text: passpage.keyInvalid
-                  ? "The key file at ~/.config/passpage/key is not a valid API key"
-                  : "No API key at ~/.config/passpage/key"
+                text: passpage.keyUnsafe
+                  ? "The key file at ~/.config/passpage/key is unsafe to use"
+                  : passpage.keyInvalid
+                    ? "The key file at ~/.config/passpage/key is not a valid API key"
+                    : "No API key at ~/.config/passpage/key"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
@@ -435,7 +449,9 @@ Panel {
               }
               Text {
                 width: parent.width
-                text: "Create a key in the passpage dashboard, then save it to that file (mode 600). The panel picks it up automatically."
+                text: passpage.keyUnsafe
+                  ? "Key file permissions are too open \u2014 run chmod 600 ~/.config/passpage/key. It must be a regular file you own, not a symlink."
+                  : "Create a key in the passpage dashboard, then save it to that file (mode 600). The panel picks it up automatically."
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -451,12 +467,12 @@ Panel {
           }
 
           PanelSeparator {
-            visible: !passpage.keyMissing
+            visible: root.keyUsable
             foreground: root.foreground
           }
 
           Column {
-            visible: !passpage.keyMissing
+            visible: root.keyUsable
             width: parent.width
             spacing: Style.space(10)
 

@@ -172,3 +172,31 @@ test("validatedBaseUrl accepts only a single plain http(s) endpoint", () => {
   assert.equal(M.validatedBaseUrl("https:///"), "")
   assert.equal(M.validatedBaseUrl(""), "")
 })
+
+test("curlConfig never routes loopback through a proxy", () => {
+  const local = M.curlConfig({ url: "http://127.0.0.1:8000/api/shares/_mine", key: "k" })
+  assert.ok(local.includes('noproxy = "localhost,127.0.0.1,::1"\n'), local)
+  const remote = M.curlConfig({ url: "https://passpage.space/api/shares/_mine", key: "k" })
+  assert.ok(remote.includes('noproxy = "localhost,127.0.0.1,::1"\n'), "every config carries noproxy")
+})
+
+test("validatedBaseUrl rejects query strings and fragments", () => {
+  assert.equal(M.validatedBaseUrl("https://passpage.space?x=1"), "")
+  assert.equal(M.validatedBaseUrl("https://passpage.space/?x=1"), "")
+  assert.equal(M.validatedBaseUrl("https://passpage.space#frag"), "")
+  assert.equal(M.validatedBaseUrl("https://passpage.space/base#frag"), "")
+  assert.equal(M.validatedBaseUrl("http://localhost:5173/base?x"), "")
+  assert.equal(M.validatedBaseUrl("https://user#evil.example.com"), "")
+})
+
+test("boundedUrl rejects whitespace and control characters", () => {
+  assert.equal(M.boundedUrl("https://a.b/ok"), "https://a.b/ok")
+  assert.equal(M.boundedUrl("https://a.b/x y"), "", "embedded space")
+  assert.equal(M.boundedUrl("https://a.b/x\ny"), "", "newline")
+  assert.equal(M.boundedUrl("https://a.b/x\ty"), "", "tab")
+  assert.equal(M.boundedUrl("https://a.b/x\u0000y"), "", "NUL")
+  assert.equal(M.boundedUrl("https://a.b/x\u001by"), "", "escape char")
+  assert.equal(M.boundedUrl("https://a.b/x\u007fy"), "", "DEL")
+  assert.equal(M.boundedUrl(" https://a.b/"), "", "leading whitespace not trimmed, rejected")
+  assert.equal(M.boundedUrl("ftp://a.b"), "")
+})
