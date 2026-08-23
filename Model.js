@@ -36,7 +36,10 @@ function parseJson(body) {
 // message when the body is empty or not JSON (e.g. a proxy 502 page).
 function errorMessage(status, body) {
   var data = parseJson(body)
-  if (data && typeof data.detail === "string" && data.detail !== "") return data.detail
+  if (data && typeof data.detail === "string" && data.detail !== "") {
+    var detail = sanitizeText(data.detail, 200)
+    if (detail !== "") return detail
+  }
   if (status === 0) return "Network error — is passpage.space reachable?"
   if (status === 413) return "Response too large — refused"
   if (status === 401) return "API key rejected"
@@ -66,6 +69,21 @@ function boundedString(value, max) {
   return value.length > max ? value.slice(0, max) : value
 }
 
+// For remote text that ends up in QML Text items (directly or through kit
+// components whose Text defaults to AutoText): strip control characters and
+// markup-significant ones so a hostile endpoint cannot smuggle rich text —
+// AutoText would otherwise render `<img src=…>` and fetch it, bypassing the
+// curl caps. Display-only; never applied to values sent back to the API.
+function sanitizeText(value, max) {
+  return boundedString(value, max).replace(/[<>&\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
+}
+
+// The API key travels into an HTTP header: one printable token or nothing.
+function sanitizeKey(value) {
+  var key = String(value || "").replace(/\s+/g, "")
+  return key.length > 0 && key.length <= 512 && /^[\x21-\x7e]+$/.test(key) ? key : ""
+}
+
 function boundedCount(value) {
   return typeof value === "number" && isFinite(value) && value > 0 ? Math.floor(value) : 0
 }
@@ -89,7 +107,7 @@ function normaliseShares(list) {
     out.push({
       slug: slug,
       url: boundedUrl(s.url),
-      title: boundedString(s.title, MAX_TITLE),
+      title: sanitizeText(s.title, MAX_TITLE),
       has_passcode: s.has_passcode === true,
       expires_at: expires === "" ? null : expires,
       created_at: boundedString(s.created_at, MAX_TIMESTAMP),
@@ -231,6 +249,7 @@ if (typeof module !== "undefined" && module.exports) {
     durationText: durationText, expiryText: expiryText, ageText: ageText, viewsText: viewsText,
     rowDetail: rowDetail, heroMeta: heroMeta, curlQuote: curlQuote, curlConfig: curlConfig,
     listUrl: listUrl, deleteUrl: deleteUrl, passcodeUrl: passcodeUrl, trimBaseUrl: trimBaseUrl,
+    sanitizeText: sanitizeText, sanitizeKey: sanitizeKey,
     MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES, MAX_STDERR_BYTES: MAX_STDERR_BYTES, MAX_SHARES: MAX_SHARES,
     MAX_TITLE: MAX_TITLE
   }

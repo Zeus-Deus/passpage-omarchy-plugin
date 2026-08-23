@@ -127,6 +127,22 @@ test("curlConfig keeps secrets off argv and escapes quotes", () => {
   assert.doesNotMatch(M.curlConfig({ url: "u", key: "k" }), /request|data =|Content-Type/)
 })
 
+test("sanitizeText neutralises markup and control chars", () => {
+  assert.equal(M.sanitizeText('<img src="http://evil/x.png">deck', 140), 'img src="http://evil/x.png" deck')
+  assert.equal(M.sanitizeText("a\u0000b\u001fc & <b>d</b>", 140), "a b c b d /b")
+  const [s] = M.normaliseShares([{ slug: "okslug", title: "<h1>hi</h1>" }])
+  assert.equal(s.title, "h1 hi /h1", "titles sanitized at ingestion")
+  assert.equal(M.errorMessage(500, '{"detail":"<img src=x>boom"}'), "img src=x boom")
+})
+
+test("sanitizeKey accepts one printable token only", () => {
+  assert.equal(M.sanitizeKey("  pp_abc123\n"), "pp_abc123")
+  assert.equal(M.sanitizeKey("pp_a\u0007bc"), "")
+  assert.equal(M.sanitizeKey("x".repeat(513)), "")
+  assert.equal(M.sanitizeKey("héllo"), "")
+  assert.equal(M.sanitizeKey(""), "")
+})
+
 test("urls", () => {
   assert.equal(M.listUrl(""), "https://passpage.space/api/shares/_mine")
   assert.equal(M.deleteUrl("http://127.0.0.1:8000", "x/y"), "http://127.0.0.1:8000/api/shares/x%2Fy/_api")

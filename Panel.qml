@@ -36,7 +36,7 @@ Panel {
   readonly property bool headerHasCursor: cursorActive && focusSection === "header"
   readonly property bool attention: passpage.keyMissing || passpage.error !== ""
   readonly property bool showExpired: passpage.expired.length > 0
-  readonly property string heroMeta: Model.heroMeta({
+  readonly property string heroMeta: passpage.keyInvalid ? "API key file looks invalid" : Model.heroMeta({
     keyMissing: passpage.keyMissing, error: passpage.error, loading: passpage.loading,
     activeCount: passpage.activeCount, expiredCount: passpage.expiredCount, soonCount: passpage.soonCount
   })
@@ -401,6 +401,7 @@ Panel {
             visible: passpage.actionStatus !== "" || passpage.actionError !== ""
             width: parent.width
             text: passpage.actionError !== "" ? passpage.actionError : passpage.actionStatus
+            textFormat: Text.PlainText
             color: passpage.actionError !== "" ? root.urgent : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -409,7 +410,7 @@ Panel {
 
           // Setup guidance when there is no key to use.
           CursorSurface {
-            visible: passpage.keyMissing
+            visible: passpage.keyMissing || passpage.keyInvalid
             width: parent.width
             implicitHeight: setupInner.implicitHeight + Style.spacing.rowPaddingX * 2
             foreground: root.foreground
@@ -424,7 +425,9 @@ Panel {
 
               Text {
                 width: parent.width
-                text: "No API key at ~/.config/passpage/key"
+                text: passpage.keyInvalid
+                  ? "The key file at ~/.config/passpage/key is not a valid API key"
+                  : "No API key at ~/.config/passpage/key"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
@@ -478,6 +481,7 @@ Panel {
               visible: !passpage.loaded && passpage.error !== ""
               width: parent.width
               text: passpage.error
+              textFormat: Text.PlainText
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -636,6 +640,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: row.title
+          textFormat: Text.PlainText
           color: row.textColor
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -645,6 +650,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: row.detail
+          textFormat: Text.PlainText
           color: row.soon ? root.urgent : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

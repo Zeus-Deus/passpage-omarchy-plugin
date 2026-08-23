@@ -29,6 +29,7 @@ Item {
   // Key state
   property string apiKey: ""
   property bool keyChecked: false
+  property bool keyInvalid: false    // file exists but is not one printable token
   readonly property bool keyMissing: keyChecked && apiKey === ""
   readonly property string keyPath: Quickshell.env("HOME") + "/.config/passpage/key"
 
@@ -203,12 +204,15 @@ Item {
     onFileChanged: reload()
     onLoaded: {
       var wasMissing = root.apiKey === ""
-      root.apiKey = String(text() || "").replace(/\s+/g, "")
+      var raw = String(text() || "")
+      root.apiKey = Model.sanitizeKey(raw)
+      root.keyInvalid = root.apiKey === "" && raw.trim() !== ""
       root.keyChecked = true
       if (root.apiKey !== "" && (wasMissing || root.error !== "")) Qt.callLater(root.refresh)
     }
     onLoadFailed: {
       root.apiKey = ""
+      root.keyInvalid = false
       root.keyChecked = true
     }
   }
@@ -220,8 +224,11 @@ Item {
   // body at the cap as "too large". (curl's own max-filesize in the config
   // only helps when the server announces a length; a chunked stream walks
   // straight past it, and Qt-side parsers buffer before they emit.)
+  // `-q` must be curl's first argument: it stops ~/.curlrc from being read,
+  // where an inherited `url`, `upload-file` or `insecure` line would receive
+  // our bearer header, exfiltrate files, or weaken TLS.
   readonly property var curlCommand: ["bash", "-c",
-    "exec 2> >(head -c " + Model.MAX_STDERR_BYTES + " >&2); exec curl --config - | head -c " + Model.MAX_RESPONSE_BYTES]
+    "exec 2> >(head -c " + Model.MAX_STDERR_BYTES + " >&2); exec curl -q --config - | head -c " + Model.MAX_RESPONSE_BYTES]
 
   Process {
     id: listProcess
