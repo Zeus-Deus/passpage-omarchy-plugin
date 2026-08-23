@@ -126,10 +126,15 @@ This deletes the plugin folder and its bar entry. Your API key file
 - Any non-zero curl exit is treated as a failed request; a partial or truncated
   body is never parsed as success, and a stale in-flight response can't
   overwrite newer local state. Changing `baseUrl` or the key file clears the
-  cached share list immediately, so rows from the old server or credential
-  can never drive actions against the new one.
-- Remote strings (titles, error details) are stripped of markup and control
-  characters before display, and rendered as plain text.
+  cached share list immediately, and both list and action (delete/passcode)
+  responses that started under the old target or credential are discarded on
+  arrival — rows and results from the old server can never bleed into the
+  new one.
+- Remote strings (titles, error details) are stripped of markup, control,
+  bidirectional-override and zero-width characters before display, and
+  rendered as plain text — a title cannot visually spoof what you are
+  copying or deleting. The same characters are rejected in share URLs before
+  they reach the clipboard or browser.
 - Responses are bounded at the source: curl's stdout and stderr pass through
   `head -c` (2 MiB / 16 KiB) before they reach the shell, so an oversized
   body is cut off and reported as an error rather than buffered. The share
