@@ -135,7 +135,9 @@ Panel {
     if (!share || passpage.busySlug !== "") return
     editingSlug = ""
     pendingDelete = share
-    confirm.selectedIndex = 1
+    // Default to Cancel: x → Enter must never delete without a deliberate
+    // choice of the destructive option.
+    confirm.selectedIndex = 0
     Qt.callLater(function() { confirmKeys.forceActiveFocus() })
   }
 
@@ -511,7 +513,10 @@ Panel {
               spacing: Style.space(6)
 
               Repeater {
-                model: passpage.active
+                // Delegates only exist while the panel is open — a closed
+                // panel costs nothing even against a hostile 500-share list.
+                // Bar count/badge stay live off Service state regardless.
+                model: root.opened ? passpage.active : []
                 ShareRow {
                   required property var modelData
                   required property int index
@@ -555,7 +560,7 @@ Panel {
               spacing: Style.space(6)
 
               Repeater {
-                model: passpage.expired
+                model: root.opened ? passpage.expired : []
                 ShareRow {
                   required property var modelData
                   required property int index
@@ -583,8 +588,10 @@ Panel {
           id: confirm
           anchors.fill: parent
           opened: root.overlayOpen
+          // displayTitle is sanitized at ingestion; the extra pass keeps this
+          // kit boundary (AutoText-capable) safe against future regressions.
           message: root.pendingDelete
-            ? "Delete “" + Model.displayTitle(root.pendingDelete) + "”? The link stops working immediately."
+            ? "Delete “" + Model.sanitizeText(Model.displayTitle(root.pendingDelete), 140) + "”? The link stops working immediately."
             : ""
           confirmText: "Delete"
           foreground: root.foreground

@@ -74,9 +74,14 @@ function boundedString(value, max) {
 // components whose Text defaults to AutoText): strip control characters and
 // markup-significant ones so a hostile endpoint cannot smuggle rich text —
 // AutoText would otherwise render `<img src=…>` and fetch it, bypassing the
-// curl caps. Display-only; never applied to values sent back to the API.
+// curl caps. Also strips bidi overrides/isolates and zero-width characters
+// (U+200B–200F, U+202A–202E, U+2066–2069, U+FEFF) so a title can't visually
+// spoof what the user copies or deletes (e.g. RLO reversing "exe.gpj").
+// Display-only; never applied to values sent back to the API.
 function sanitizeText(value, max) {
-  return boundedString(value, max).replace(/[<>&\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
+  return boundedString(value, max)
+    .replace(/[<>&\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, " ")
+    .replace(/\s+/g, " ").trim()
 }
 
 // The API key travels into an HTTP header: exactly one printable token. Only
@@ -93,9 +98,10 @@ function boundedCount(value) {
 
 function boundedUrl(value) {
   var url = boundedString(value, MAX_URL)
-  // No whitespace or control characters (including NUL and newlines) — these
-  // URLs are handed to wl-copy and the browser as argv.
-  if (/[\s\u0000-\u001f\u007f]/.test(url)) return ""
+  // No whitespace, control characters (including NUL and newlines), bidi
+  // overrides or zero-width characters — these URLs are handed to wl-copy
+  // and the browser as argv and must read as they act.
+  if (/[\s\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/.test(url)) return ""
   return /^https?:\/\//.test(url) ? url : ""
 }
 
@@ -104,11 +110,16 @@ function boundedUrl(value) {
 function normaliseShares(list) {
   if (!(list instanceof Array)) return []
   var out = []
+  // Slugs key all row state (editor, busy, delete), so a hostile list must
+  // not repeat one. Object.create(null): "__proto__" is a valid slug.
+  var seen = Object.create(null)
   for (var i = 0; i < list.length && out.length < MAX_SHARES; i++) {
     var s = list[i]
     if (!s || typeof s !== "object") continue
     var slug = typeof s.slug === "string" ? s.slug : ""
     if (slug === "" || slug.length > MAX_SLUG || !SLUG_RE.test(slug)) continue
+    if (seen[slug]) continue
+    seen[slug] = true
     var expires = boundedString(s.expires_at, MAX_TIMESTAMP)
     out.push({
       slug: slug,
@@ -129,6 +140,27 @@ function normaliseShares(list) {
     return tb - ta
   })
   return out
+}
+
+// Field-wise equality of two normalised share lists (same shares, same
+// order, same displayed fields). Service.qml uses this to skip reassigning
+// the `active`/`expired` row models when nothing changed — an assignment
+// resets the Repeater and rebuilds every row delegate, which would destroy
+// an open passcode editor and churn objects on every minute tick / poll.
+var SHARE_FIELDS = ["slug", "url", "title", "has_passcode", "expires_at",
+  "created_at", "view_count", "track_views", "file_count", "size_bytes"]
+
+function sameShareLists(a, b) {
+  if (!(a instanceof Array) || !(b instanceof Array) || a.length !== b.length) return false
+  for (var i = 0; i < a.length; i++) {
+    var x = a[i], y = b[i]
+    if (x === y) continue
+    if (!x || !y) return false
+    for (var j = 0; j < SHARE_FIELDS.length; j++) {
+      if (x[SHARE_FIELDS[j]] !== y[SHARE_FIELDS[j]]) return false
+    }
+  }
+  return true
 }
 
 function partition(shares, nowMs) {
@@ -198,7 +230,9 @@ function rowDetail(share, nowMs) {
 
 function heroMeta(state) {
   if (state.keyMissing) return "No API key found"
-  if (state.error) return state.error
+  // error is sanitized at ingestion already; a second pass here keeps the
+  // display boundary safe even if a future assignment forgets to.
+  if (state.error) return sanitizeText(String(state.error), 200)
   if (state.loading && state.activeCount === 0 && state.expiredCount === 0) return "Loading shares"
   if (state.activeCount === 0) return state.expiredCount > 0 ? "No active shares" : "Nothing shared yet"
   var text = plural(state.activeCount, "active share")
@@ -273,6 +307,7 @@ if (typeof module !== "undefined" && module.exports) {
     partition: partition, countExpiringSoon: countExpiringSoon, displayTitle: displayTitle,
     durationText: durationText, expiryText: expiryText, ageText: ageText, viewsText: viewsText,
     rowDetail: rowDetail, heroMeta: heroMeta, curlQuote: curlQuote, curlConfig: curlConfig,
+    sameShareLists: sameShareLists,
     listUrl: listUrl, deleteUrl: deleteUrl, passcodeUrl: passcodeUrl, validatedBaseUrl: validatedBaseUrl,
     sanitizeText: sanitizeText, sanitizeKey: sanitizeKey,
     MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES, MAX_STDERR_BYTES: MAX_STDERR_BYTES, MAX_SHARES: MAX_SHARES,

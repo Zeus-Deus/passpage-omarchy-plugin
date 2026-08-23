@@ -200,3 +200,49 @@ test("boundedUrl rejects whitespace and control characters", () => {
   assert.equal(M.boundedUrl(" https://a.b/"), "", "leading whitespace not trimmed, rejected")
   assert.equal(M.boundedUrl("ftp://a.b"), "")
 })
+
+test("sanitizeText strips bidi overrides and zero-width characters", () => {
+  assert.equal(M.sanitizeText("evil\u202egnp.exe\u202c", 140), "evil gnp.exe")
+  assert.equal(M.sanitizeText("a\u200bb \u200f c\u2066d\u2069\ufeff", 140), "a b c d")
+  const [t] = M.normaliseShares([{ slug: "okslug", title: "safe\u202espoof" }])
+  assert.equal(t.title, "safe spoof", "titles cleaned at ingestion")
+})
+
+test("boundedUrl rejects bidi and zero-width characters", () => {
+  assert.equal(M.boundedUrl("https://a.b/x\u202ey"), "", "RLO")
+  assert.equal(M.boundedUrl("https://a.b/x\u200by"), "", "ZWSP")
+  assert.equal(M.boundedUrl("https://a.b/x\u2066y"), "", "LRI")
+  assert.equal(M.boundedUrl("https://a.b/x\ufeffy"), "", "BOM/ZWNBSP")
+})
+
+test("normaliseShares dedupes repeated slugs", () => {
+  const list = M.normaliseShares([
+    share({ slug: "dup", title: "first" }),
+    share({ slug: "dup", title: "second" }),
+    share({ slug: "other" })
+  ])
+  assert.deepEqual(list.map(s => s.slug).sort(), ["dup", "other"])
+  assert.equal(list.find(s => s.slug === "dup").title, "first", "first occurrence wins")
+  assert.equal(M.normaliseShares([share({ slug: "__proto__" }), share({ slug: "__proto__" })]).length, 1,
+    "prototype-named slugs still dedupe")
+})
+
+test("heroMeta sanitizes the error string at the display boundary", () => {
+  assert.equal(M.heroMeta({ error: "<img src=x>boom" }), "img src=x boom")
+  assert.equal(M.heroMeta({ error: "API key rejected" }), "API key rejected")
+})
+
+test("sameShareLists detects membership, order, and field changes", () => {
+  const a = share({ slug: "aa" }), b = share({ slug: "bb" })
+  const fresh = () => M.normaliseShares([a, b])
+  assert.equal(M.sameShareLists(fresh(), fresh()), true, "field-equal fresh objects compare equal")
+  assert.equal(M.sameShareLists([], []), true)
+  assert.equal(M.sameShareLists(fresh(), M.normaliseShares([b, a])), false, "order matters")
+  assert.equal(M.sameShareLists(fresh(), M.normaliseShares([a])), false, "length matters")
+  const changed = M.normaliseShares([Object.assign({}, a, { has_passcode: true }), b])
+  assert.equal(M.sameShareLists(fresh(), changed), false, "field change detected")
+  const retitled = M.normaliseShares([Object.assign({}, a, { title: "new" }), b])
+  assert.equal(M.sameShareLists(fresh(), retitled), false, "title change detected")
+  assert.equal(M.sameShareLists(null, []), false)
+  assert.equal(M.sameShareLists([], "x"), false)
+})

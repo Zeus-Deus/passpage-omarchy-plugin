@@ -85,11 +85,16 @@ Item {
     return Math.max(min, Math.min(max, n))
   }
 
+  // Reassign the row models only when membership or a displayed field really
+  // changed: an assignment resets the Repeater and rebuilds every ShareRow
+  // delegate, which would churn QML objects on every minute tick / poll and
+  // destroy an open passcode editor (silently wiping typed input). soonCount
+  // is a plain int and may always update.
   function recompute() {
     nowMs = Date.now()
     var parts = Model.partition(shares, nowMs)
-    active = parts.active
-    expired = parts.expired
+    if (!Model.sameShareLists(parts.active, active)) active = parts.active
+    if (!Model.sameShareLists(parts.expired, expired)) expired = parts.expired
     soonCount = Model.countExpiringSoon(parts.active, nowMs)
   }
 
@@ -189,6 +194,7 @@ Item {
   function startAction(kind, slug, config) {
     actionProcess.kind = kind
     actionProcess.slug = slug
+    actionProcess.generation = generation
     actionProcess.config = config
     busySlug = slug
     actionProcess.running = true
@@ -196,7 +202,9 @@ Item {
 
   // head closing the pipe makes curl fail its write (exit 23) under pipefail;
   // 63 is curl's own max-filesize, 141 a raw SIGPIPE. The length check is a
-  // belt-and-braces fallback for any of them.
+  // best-effort fallback only: it counts UTF-16 chars against a byte cap, so
+  // it under-counts multibyte text — the exit codes (backed by max-filesize
+  // and the head -c producer cap) are the real gates.
   function oversized(exitCode, output) {
     return exitCode === 23 || exitCode === 63 || exitCode === 141
       || String(output || "").length >= Model.MAX_RESPONSE_BYTES
@@ -209,12 +217,14 @@ Item {
 
   function finishList(exitCode, output, stderr, requestGeneration) {
     loading = false
+    // Conditions changed while this was in flight — success or failure, the
+    // result is stale and must not touch state (not even the sticky error
+    // line, which now describes the new target); redo instead.
+    if (requestGeneration !== generation) { Qt.callLater(root.refresh); return }
     if (oversized(exitCode, output)) { error = Model.errorMessage(413, ""); return }
     // Any other non-zero exit = truncated/failed transfer; never trust a
     // partial body (a timed-out `[` must not read as an empty list).
     if (exitCode !== 0) { error = networkError(stderr); return }
-    // Conditions changed while this was in flight — the data is stale, redo.
-    if (requestGeneration !== generation) { Qt.callLater(root.refresh); return }
     var result = Model.parseCurlOutput(output)
     if (result.status === 200) {
       var data = Model.parseJson(result.body)
@@ -232,8 +242,12 @@ Item {
     error = Model.errorMessage(result.status, result.status === 0 ? "" : result.body)
   }
 
-  function finishAction(kind, slug, exitCode, output, stderr) {
+  function finishAction(kind, slug, exitCode, output, stderr, requestGeneration) {
     busySlug = ""
+    // The action started under an old baseUrl/key (in flight up to 15 s): its
+    // outcome belongs to the old target and must not mutate rows, show a
+    // status, or bump generation under the new one. Reconcile by refetching.
+    if (requestGeneration !== generation) { Qt.callLater(root.refresh); return }
     if (oversized(exitCode, output)) {
       showActionError(Model.errorMessage(413, ""))
       actionFinished(kind, slug, false)
@@ -280,8 +294,9 @@ Item {
     actionFinished(kind, slug, true)
   }
 
-  // Guarded key read: regular file, not a symlink, owned by us, mode 600/400
-  // (any group/other access bit rejects it), first 4 KiB only, and the read
+  // Guarded key read: regular file, not a symlink, owned by us, mode exactly
+  // 600 or 400 (anything else — group/other bits, write-only 200 — rejects
+  // the file rather than reading nothing), first 4 KiB only, and the read
   // itself runs under `timeout 2` so a file swapped for a blocking special
   // file between check and read can never hang this process (which would
   // permanently block refresh()). The first output line is a marker —
@@ -292,7 +307,7 @@ Item {
     id: keyProcess
     property bool pendingList: false
     command: ["bash", "-c",
-      "f=\"$HOME/.config/passpage/key\"; if [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; then echo missing; exit 0; fi; if [ -f \"$f\" ] && [ ! -L \"$f\" ] && [ -O \"$f\" ]; then m=$(stat -c %a -- \"$f\" 2>/dev/null); case \"$m\" in *00) echo ok; timeout 2 head -c 4096 -- \"$f\";; *) echo unsafe;; esac; else echo unsafe; fi"]
+      "f=\"$HOME/.config/passpage/key\"; if [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; then echo missing; exit 0; fi; if [ -f \"$f\" ] && [ ! -L \"$f\" ] && [ -O \"$f\" ]; then m=$(stat -c %a -- \"$f\" 2>/dev/null); case \"$m\" in 600|400) echo ok; timeout 2 head -c 4096 -- \"$f\";; *) echo unsafe;; esac; else echo unsafe; fi"]
     stdout: StdioCollector { id: keyOut; waitForEnd: true }
     onExited: function(exitCode) {
       var out = String(keyOut.text || "")
@@ -358,6 +373,7 @@ Item {
     property string kind: ""
     property string slug: ""
     property string config: ""
+    property int generation: 0
     command: root.curlCommand
     stdinEnabled: true
     stdout: StdioCollector { id: actionOut; waitForEnd: true }
@@ -369,7 +385,7 @@ Item {
       stdinEnabled = false
       stdinEnabled = true
     }
-    onExited: function(exitCode) { root.finishAction(kind, slug, exitCode, actionOut.text, actionErr.text) }
+    onExited: function(exitCode) { root.finishAction(kind, slug, exitCode, actionOut.text, actionErr.text, generation) }
   }
 
   Timer {
