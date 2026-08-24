@@ -41,6 +41,7 @@ server, the bar glyph shows a `!` badge and the panel says why.
 Everything is already present on a stock Omarchy install:
 
 - `curl` — all API calls
+- `perl` — guarded API-key reader (already installed as a dependency of `git`)
 - `wl-copy` (wl-clipboard) — copy link
 - `omarchy-launch-browser` — open share / dashboard
 
@@ -105,22 +106,26 @@ This deletes the plugin folder and its bar entry. Your API key file
 - curl runs with `-q` (never reads `~/.curlrc`) and `--globoff`, so no inherited
   option and no glob in a URL can redirect the request, weaken TLS, attach the
   key to another URL, or fan one request out to several hosts.
-- `baseUrl` is validated to a single plain http(s) endpoint — `https` is
+- `baseUrl` is validated to a single unambiguous http(s) endpoint — `https` is
   required unless the host is loopback, so credentials never cross the network
-  in cleartext; `{}`/`[]`/whitespace/`?`/`#` are rejected. A blank value falls
+  in cleartext; userinfo, backslashes, controls, bidi/zero-width marks,
+  whitespace, `?`/`#`, and curl URL globs are rejected. A blank value falls
   back to the default; any other unusable value fails closed (no request)
-  rather than silently falling back to production.
+  rather than silently falling back to production. Brackets delimiting an
+  IPv6 host are supported.
 - Requests to loopback hosts never transit an `http_proxy`/`HTTPS_PROXY` from
   the environment (`noproxy = localhost,127.0.0.1,::1` in every curl config),
   so a proxy can never see the bearer token of a local-dev request in
   cleartext. Remote https requests still honour your proxy settings.
-- The API key is read through a guarded, time-bounded process: regular file,
-  not a symlink, owned by you, mode `600`/`400` (any group/other access bit
-  rejects the file), first 4 KiB only, read under a 2-second `timeout`. A
-  special, world-readable, or oversized file at the key path can't be read
-  into the shell or hang it. The key must be a single printable token; a
-  missing, unsafe, or invalid key file is surfaced distinctly (`!` badge,
-  panel explanation) and no share data is shown without a usable key.
+- The API key path is opened exactly once with no-follow/nonblocking flags;
+  its regular-file type, owner, mode `600`/`400`, and ≤4 KiB size are checked
+  through that descriptor, then the same descriptor is read. A symlink swap
+  cannot race the checks, and a special, world-readable, or oversized file at
+  the key path can't be read into the shell. The reader also retains a
+  2-second outer timeout so a stalled filesystem cannot hang refresh. Perl is
+  available through Omarchy's stock `git` dependency. The key must be a single
+  printable token. A missing, unsafe, or invalid key file is surfaced distinctly
+  (`!` badge, panel explanation) and no share data is shown without a usable key.
 - URLs handed to the clipboard/browser are passed as a separate argument (never
   interpolated into a shell string) and restricted to `http(s)://`.
 - Any non-zero curl exit is treated as a failed request; a partial or truncated

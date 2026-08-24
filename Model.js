@@ -10,6 +10,7 @@ var SOON_MS = 24 * 60 * 60 * 1000
 // the array and every field before the data reaches QML bindings.
 var MAX_RESPONSE_BYTES = 2 * 1024 * 1024   // ~40x a 100-share listing
 var MAX_STDERR_BYTES = 16 * 1024
+var MAX_KEY_FILE_BYTES = 4096
 var MAX_SHARES = 500
 var MAX_SLUG = 64
 var MAX_URL = 2048
@@ -90,6 +91,50 @@ function sanitizeText(value, max) {
 function sanitizeKey(value) {
   var key = String(value || "").trim()
   return key.length > 0 && key.length <= 512 && /^[\x21-\x7e]+$/.test(key) ? key : ""
+}
+
+// Open the key path exactly once, without following a final symlink and
+// without blocking on a FIFO. All metadata checks and the bounded read use
+// that same descriptor, closing the pathname-check/pathname-read race. Perl
+// is already a dependency of git on Omarchy; only this program text is argv,
+// while the credential itself is returned over stdout. `timeout` is kept as
+// an outer liveness bound for a stalled filesystem operation.
+var KEY_READ_PROGRAM = [
+  "use strict; use warnings;",
+  "use Fcntl qw(O_RDONLY O_NONBLOCK O_NOFOLLOW F_SETFD FD_CLOEXEC S_ISREG);",
+  "use Errno qw(ENOENT);",
+  "my $path = ($ENV{HOME} // q{}) . q{/.config/passpage/key};",
+  "my $fh;",
+  "unless (sysopen($fh, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW)) { print(($! == ENOENT ? q{missing} : q{unsafe}) . qq{\\n}); exit 0; }",
+  "unless (fcntl($fh, F_SETFD, FD_CLOEXEC)) { print qq{unsafe\\n}; exit 0; }",
+  "my @before = stat($fh);",
+  "my $mode = @before ? ($before[2] & 07777) : -1;",
+  "unless (@before && S_ISREG($before[2]) && $before[4] == $< && ($mode == 0600 || $mode == 0400) && $before[7] >= 0 && $before[7] <= " + MAX_KEY_FILE_BYTES + ") { print qq{unsafe\\n}; exit 0; }",
+  "my $data = q{};",
+  "while (length($data) <= " + MAX_KEY_FILE_BYTES + ") { my $n = sysread($fh, my $chunk, " + (MAX_KEY_FILE_BYTES + 1) + " - length($data)); unless (defined $n) { print qq{unsafe\\n}; exit 0; } last if $n == 0; $data .= $chunk; }",
+  "my @after = stat($fh);",
+  "unless (@after && S_ISREG($after[2]) && $after[0] == $before[0] && $after[1] == $before[1] && $after[2] == $before[2] && $after[4] == $before[4] && $after[7] == $before[7] && $after[9] == $before[9] && $after[10] == $before[10] && length($data) == $before[7] && length($data) <= " + MAX_KEY_FILE_BYTES + ") { print qq{unsafe\\n}; exit 0; }",
+  "print qq{ok\\n}, $data;"
+].join(" ")
+
+function keyReadCommand() {
+  return ["timeout", "2", "perl", "-e", KEY_READ_PROGRAM]
+}
+
+// Parse the key reader's marker protocol and fail closed on every non-zero
+// exit (including timeout's 124), even if partial output happens to resemble
+// a valid marker.
+function parseKeyReadOutput(exitCode, output) {
+  if (exitCode !== 0) return { key: "", invalid: false, unsafe: true }
+  var out = String(output || "")
+  var nl = out.indexOf("\n")
+  var marker = (nl === -1 ? out : out.slice(0, nl)).trim()
+  var raw = nl === -1 ? "" : out.slice(nl + 1)
+  if (marker === "ok") {
+    var key = sanitizeKey(raw)
+    return { key: key, invalid: key === "" && raw.trim() !== "", unsafe: false }
+  }
+  return { key: "", invalid: false, unsafe: marker !== "missing" }
 }
 
 function boundedCount(value) {
@@ -270,11 +315,11 @@ function curlConfig(opts) {
   return lines.join("\n") + "\n"
 }
 
-// Validate the configured base URL to a single plain http(s) endpoint, or ""
+// Validate the configured base URL to one unambiguous http(s) endpoint, or ""
 // if unusable (callers fail closed). Defends several things at once:
 //  - no whitespace/newline  -> can't inject extra curl-config directives
-//  - no { } [ ]             -> curl globbing can't fan one request into many
-//                              (which would send the bearer token to each host)
+//  - no URL glob braces or path brackets -> curl can't fan one request into
+//                              many (IPv6 authority brackets remain valid)
 //  - http only for loopback -> credentials never cross the network in cleartext
 //  - http(s) scheme only    -> no file:/javascript: smuggling
 //  - no ? or #              -> a query/fragment would make the API paths we
@@ -283,10 +328,30 @@ function curlConfig(opts) {
 function validatedBaseUrl(url) {
   var s = String(url || "").trim()
   while (s.length > 0 && s[s.length - 1] === "/") s = s.slice(0, -1)
-  var m = /^(https?):\/\/([^\/\s{}\[\]?#]+)(\/[^\s{}\[\]?#]*)?$/.exec(s)
+  // Keep curl's authority interpretation identical to what the setting looks
+  // like: no userinfo, backslash-as-slash ambiguity, quotes, raw controls, or
+  // invisible direction/width controls. Hostnames are ASCII (IDNs use their
+  // punycode form); bracketed IPv6 remains available for self-hosting.
+  if (/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff@\\"'<>]/.test(s)) return ""
+  var m = /^(https?):\/\/(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(?::([0-9]{1,5}))?(\/[^\s{}\[\]?#]*)?$/.exec(s)
   if (!m) return ""
-  var host = m[2].toLowerCase().replace(/:\d+$/, "")
-  var isLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]"
+  var host = m[2].toLowerCase()
+  if (host[0] === "[") {
+    var address = host.slice(1, -1)
+    if (address === "" || address.indexOf(":") === -1) return ""
+  } else {
+    if (host.length > 253) return ""
+    var labels = host.split(".")
+    for (var i = 0; i < labels.length; i++) {
+      var label = labels[i]
+      if (label.length < 1 || label.length > 63 || label[0] === "-" || label[label.length - 1] === "-") return ""
+    }
+  }
+  if (m[3] !== undefined) {
+    var port = parseInt(m[3], 10)
+    if (port < 1 || port > 65535) return ""
+  }
+  var isLoopback = host === "localhost" || host === "127.0.0.1" || host === "[::1]"
   if (m[1] === "http" && !isLoopback) return ""
   return s
 }
@@ -309,8 +374,10 @@ if (typeof module !== "undefined" && module.exports) {
     rowDetail: rowDetail, heroMeta: heroMeta, curlQuote: curlQuote, curlConfig: curlConfig,
     sameShareLists: sameShareLists,
     listUrl: listUrl, deleteUrl: deleteUrl, passcodeUrl: passcodeUrl, validatedBaseUrl: validatedBaseUrl,
-    sanitizeText: sanitizeText, sanitizeKey: sanitizeKey,
+    sanitizeText: sanitizeText, sanitizeKey: sanitizeKey, keyReadCommand: keyReadCommand,
+    parseKeyReadOutput: parseKeyReadOutput,
     MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES, MAX_STDERR_BYTES: MAX_STDERR_BYTES, MAX_SHARES: MAX_SHARES,
-    MAX_TITLE: MAX_TITLE, MAX_PASSCODE: MAX_PASSCODE, boundedUrl: boundedUrl
+    MAX_KEY_FILE_BYTES: MAX_KEY_FILE_BYTES, MAX_TITLE: MAX_TITLE, MAX_PASSCODE: MAX_PASSCODE,
+    boundedUrl: boundedUrl
   }
 }

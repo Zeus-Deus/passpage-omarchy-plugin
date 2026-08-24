@@ -4,6 +4,10 @@
 
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const childProcess = require("node:child_process")
+const fs = require("node:fs")
+const os = require("node:os")
+const path = require("node:path")
 const M = require("../Model.js")
 
 const NOW = Date.parse("2026-08-21T12:00:00Z")
@@ -144,6 +148,62 @@ test("sanitizeKey accepts one printable token only", () => {
   assert.equal(M.sanitizeKey(""), "")
 })
 
+test("keyReadCommand reads only safe regular files through its opened descriptor", t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "passpage-key-test-"))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const dir = path.join(home, ".config", "passpage")
+  const key = path.join(dir, "key")
+  fs.mkdirSync(dir, { recursive: true })
+
+  const command = M.keyReadCommand()
+  assert.deepEqual(command.slice(0, 4), ["timeout", "2", "perl", "-e"],
+    "the complete descriptor reader retains its whole-process deadline")
+  const read = () => childProcess.spawnSync(command[0], command.slice(1), {
+    encoding: "utf8", env: Object.assign({}, process.env, { HOME: home }), timeout: 1000
+  })
+
+  let result = read()
+  assert.equal(result.status, 0)
+  assert.equal(result.stdout, "missing\n")
+
+  fs.writeFileSync(key, "pp_safe\n", { mode: 0o600 })
+  result = read()
+  assert.equal(result.status, 0)
+  assert.equal(result.stdout, "ok\npp_safe\n")
+
+  fs.chmodSync(key, 0o400)
+  assert.equal(read().stdout, "ok\npp_safe\n", "mode 400 is accepted")
+  fs.chmodSync(key, 0o644)
+  assert.equal(read().stdout, "unsafe\n", "group/other-readable file is rejected")
+
+  fs.rmSync(key)
+  fs.symlinkSync("/etc/passwd", key)
+  assert.equal(read().stdout, "unsafe\n", "O_NOFOLLOW rejects a final symlink")
+
+  fs.rmSync(key)
+  assert.equal(childProcess.spawnSync("mkfifo", [key]).status, 0)
+  result = read()
+  assert.equal(result.error, undefined, "O_NONBLOCK keeps a FIFO from hanging")
+  assert.equal(result.stdout, "unsafe\n")
+
+  fs.rmSync(key)
+  fs.writeFileSync(key, "x".repeat(M.MAX_KEY_FILE_BYTES + 1), { mode: 0o600 })
+  assert.equal(read().stdout, "unsafe\n", "oversized file is rejected from descriptor metadata")
+})
+
+test("parseKeyReadOutput fails closed on timeouts, failures, and unknown output", () => {
+  assert.deepEqual(M.parseKeyReadOutput(0, "missing\n"), { key: "", invalid: false, unsafe: false })
+  assert.deepEqual(M.parseKeyReadOutput(0, "ok\npp_safe\n"),
+    { key: "pp_safe", invalid: false, unsafe: false })
+  assert.deepEqual(M.parseKeyReadOutput(0, "ok\nnot a key\n"),
+    { key: "", invalid: true, unsafe: false })
+  assert.deepEqual(M.parseKeyReadOutput(0, "surprise\n"), { key: "", invalid: false, unsafe: true })
+  assert.deepEqual(M.parseKeyReadOutput(124, ""), { key: "", invalid: false, unsafe: true },
+    "GNU timeout exit is unsafe")
+  assert.deepEqual(M.parseKeyReadOutput(1, "missing\n"), { key: "", invalid: false, unsafe: true },
+    "partial marker output cannot override a failing exit")
+})
+
 test("urls", () => {
   assert.equal(M.listUrl("https://passpage.space"), "https://passpage.space/api/shares/_mine")
   assert.equal(M.deleteUrl("http://127.0.0.1:8000", "x/y"), "http://127.0.0.1:8000/api/shares/x%2Fy/_api")
@@ -154,13 +214,14 @@ test("MAX_PASSCODE is a sane cap", () => {
   assert.equal(M.MAX_PASSCODE, 256)
 })
 
-test("validatedBaseUrl accepts only a single plain http(s) endpoint", () => {
+test("validatedBaseUrl accepts only a single unambiguous http(s) endpoint", () => {
   assert.equal(M.validatedBaseUrl("https://passpage.space"), "https://passpage.space")
   assert.equal(M.validatedBaseUrl("https://passpage.space///"), "https://passpage.space")
   assert.equal(M.validatedBaseUrl("  https://a.b  "), "https://a.b")
   // loopback may use http; anything else may not (no cleartext credentials)
   assert.equal(M.validatedBaseUrl("http://127.0.0.1:8000"), "http://127.0.0.1:8000")
   assert.equal(M.validatedBaseUrl("http://localhost:5173/base"), "http://localhost:5173/base")
+  assert.equal(M.validatedBaseUrl("http://[::1]:8000"), "http://[::1]:8000")
   assert.equal(M.validatedBaseUrl("http://evil.example.com"), "", "cleartext to non-loopback rejected")
   // rejections that would otherwise be exploitable
   assert.equal(M.validatedBaseUrl("https://x\nupload-file = /home/u/.config/passpage/key"), "", "newline injection")
@@ -171,6 +232,20 @@ test("validatedBaseUrl accepts only a single plain http(s) endpoint", () => {
   assert.equal(M.validatedBaseUrl("ftp://x"), "")
   assert.equal(M.validatedBaseUrl("https:///"), "")
   assert.equal(M.validatedBaseUrl(""), "")
+})
+
+test("validatedBaseUrl rejects ambiguous or disguised authorities", () => {
+  assert.equal(M.validatedBaseUrl("https://passpage.space@evil.example"), "", "userinfo is forbidden")
+  assert.equal(M.validatedBaseUrl("https://passpage.space\\@evil.example"), "", "backslash ambiguity")
+  assert.equal(M.validatedBaseUrl('https://passpage.space".evil.example'), "", "quotes are forbidden")
+  assert.equal(M.validatedBaseUrl("https://passpage.space\u0000.evil.example"), "", "raw NUL")
+  assert.equal(M.validatedBaseUrl("https://passpage.space\u001b.evil.example"), "", "raw escape")
+  assert.equal(M.validatedBaseUrl("https://passpage.space\u202e.evil.example"), "", "bidi override")
+  assert.equal(M.validatedBaseUrl("https://passpage.space\u200b.evil.example"), "", "zero-width character")
+  assert.equal(M.validatedBaseUrl("https://-bad.example"), "", "hostname labels cannot start with a hyphen")
+  assert.equal(M.validatedBaseUrl("https://bad..example"), "", "hostname labels cannot be empty")
+  assert.equal(M.validatedBaseUrl("https://passpage.space:0"), "", "port zero is unusable")
+  assert.equal(M.validatedBaseUrl("https://passpage.space:65536"), "", "port must fit TCP")
 })
 
 test("curlConfig never routes loopback through a proxy", () => {

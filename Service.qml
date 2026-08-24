@@ -294,37 +294,23 @@ Item {
     actionFinished(kind, slug, true)
   }
 
-  // Guarded key read: regular file, not a symlink, owned by us, mode exactly
-  // 600 or 400 (anything else — group/other bits, write-only 200 — rejects
-  // the file rather than reading nothing), first 4 KiB only, and the read
-  // itself runs under `timeout 2` so a file swapped for a blocking special
-  // file between check and read can never hang this process (which would
-  // permanently block refresh()). The first output line is a marker —
-  // "ok" / "unsafe" / "missing" — so the UI can tell a missing file from an
-  // unsafe one; the key bytes follow only after "ok". The path is fixed and
-  // secrets travel over stdout only, never argv.
+  // Guarded key read: one O_NOFOLLOW|O_NONBLOCK open, then descriptor-based
+  // regular-file, owner, mode (600/400), and <=4 KiB checks followed by a
+  // bounded read from that same descriptor. This both closes the pathname
+  // check/read race and makes a FIFO unable to block refresh(). The first
+  // output line is "ok" / "unsafe" / "missing"; key bytes follow only after
+  // "ok" and travel over stdout, never argv. An outer 2-second timeout still
+  // fails closed if the filesystem itself stalls.
   Process {
     id: keyProcess
     property bool pendingList: false
-    command: ["bash", "-c",
-      "f=\"$HOME/.config/passpage/key\"; if [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; then echo missing; exit 0; fi; if [ -f \"$f\" ] && [ ! -L \"$f\" ] && [ -O \"$f\" ]; then m=$(stat -c %a -- \"$f\" 2>/dev/null); case \"$m\" in 600|400) echo ok; timeout 2 head -c 4096 -- \"$f\";; *) echo unsafe;; esac; else echo unsafe; fi"]
+    command: Model.keyReadCommand()
     stdout: StdioCollector { id: keyOut; waitForEnd: true }
     onExited: function(exitCode) {
-      var out = String(keyOut.text || "")
-      var nl = out.indexOf("\n")
-      var marker = (nl === -1 ? out : out.slice(0, nl)).trim()
-      var raw = nl === -1 ? "" : out.slice(nl + 1)
-      var next = ""
-      if (marker === "ok") {
-        root.keyUnsafe = false
-        next = Model.sanitizeKey(raw)
-        root.keyInvalid = next === "" && raw.trim() !== ""
-      } else {
-        // "missing", "unsafe", or anything unexpected (script failure):
-        // no usable key. Unknown output fails closed as unsafe.
-        root.keyUnsafe = marker !== "missing"
-        root.keyInvalid = false
-      }
+      var result = Model.parseKeyReadOutput(exitCode, keyOut.text)
+      var next = result.key
+      root.keyUnsafe = result.unsafe
+      root.keyInvalid = result.invalid
       if (next !== root.apiKey) {
         // Credential changed (including to none): stale rows must never
         // drive actions under the new credential. In-flight list responses
