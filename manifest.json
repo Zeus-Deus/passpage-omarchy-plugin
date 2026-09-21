@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "space.passpage.shares",
   "name": "Passpage",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "author": "Zeus-Deus",
   "license": "MIT",
   "description": "Your passpage.space shares in the bar: active count, copy link, open, set or remove passcode, delete.",
