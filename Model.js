@@ -364,6 +364,21 @@ function listUrl(baseUrl) { return apiUrl(baseUrl, "/api/shares/_mine") }
 function deleteUrl(baseUrl, slug) { return apiUrl(baseUrl, "/api/shares/" + encodeURIComponent(slug) + "/_api") }
 function passcodeUrl(baseUrl, slug) { return apiUrl(baseUrl, "/api/shares/" + encodeURIComponent(slug) + "/passcode/_api") }
 
+// Wheel arithmetic for the share list. Flickable's own wheel handling
+// starts a kinetic flick that decelerates almost at once, so a notch lands
+// barely a row further down. Touchpads report pixelDelta and are already
+// 1:1 with the finger (natural-scroll direction included), so they pass
+// straight through; a mouse notch (120 units) converts to stepPx. The
+// result is clamped to the scrollable range.
+function wheelContentY(contentY, contentHeight, viewHeight, pixelDeltaY, angleDeltaY, stepPx) {
+  var at = Number(contentY) || 0
+  var max = Math.max(0, (Number(contentHeight) || 0) - (Number(viewHeight) || 0))
+  var px = Number(pixelDeltaY) || 0
+  var angle = Number(angleDeltaY) || 0
+  var delta = px ? -px : (angle ? -(angle / 120) * (Number(stepPx) || 0) : 0)
+  return Math.max(0, Math.min(max, at + delta))
+}
+
 // Allow Node tests to import this file; QML ignores the block.
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
@@ -378,6 +393,6 @@ if (typeof module !== "undefined" && module.exports) {
     parseKeyReadOutput: parseKeyReadOutput,
     MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES, MAX_STDERR_BYTES: MAX_STDERR_BYTES, MAX_SHARES: MAX_SHARES,
     MAX_KEY_FILE_BYTES: MAX_KEY_FILE_BYTES, MAX_TITLE: MAX_TITLE, MAX_PASSCODE: MAX_PASSCODE,
-    boundedUrl: boundedUrl
+    boundedUrl: boundedUrl, wheelContentY: wheelContentY
   }
 }

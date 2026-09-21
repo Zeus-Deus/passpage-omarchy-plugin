@@ -47,6 +47,8 @@ Panel {
   })
   readonly property string countText: passpage.loaded && root.keyUsable && passpage.activeCount > 0 ? String(passpage.activeCount) : ""
   readonly property string dashboardUrl: passpage.baseUrl + "/dashboard"
+  // One wheel notch = three share rows: row padding plus the two text lines.
+  readonly property int wheelStep: (Style.spacing.rowPaddingX + Style.space(38)) * 3
 
   function selectedShare() {
     if (focusSection === "active") return passpage.active[Math.max(0, Math.min(activeIndex, passpage.active.length - 1))] || null
@@ -359,6 +361,22 @@ Panel {
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        // Flickable's built-in wheel handling is velocity-based: a notch
+        // starts a tiny flick that decelerates at once, so a long share list
+        // crawls compared to the rest of the desktop. Drive contentY directly
+        // instead — one notch moves three rows, touchpads keep their own
+        // pixel deltas, and Model clamps to the scrollable range.
+        WheelHandler {
+          acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+          onWheel: function(event) {
+            panelFlick.cancelFlick()
+            panelFlick.contentY = Model.wheelContentY(panelFlick.contentY, panelFlick.contentHeight,
+                                                      panelFlick.height, event.pixelDelta.y,
+                                                      event.angleDelta.y, root.wheelStep)
+            event.accepted = true
+          }
+        }
 
         Column {
           id: column

@@ -321,3 +321,18 @@ test("sameShareLists detects membership, order, and field changes", () => {
   assert.equal(M.sameShareLists(null, []), false)
   assert.equal(M.sameShareLists([], "x"), false)
 })
+
+test("wheelContentY moves a notch by the step and clamps to the range", () => {
+  // contentHeight 1000, viewHeight 400 -> scrollable range is [0, 600].
+  const at = (y, px, angle, step = 150) => M.wheelContentY(y, 1000, 400, px, angle, step)
+  assert.equal(at(0, 0, -120), 150, "one notch down moves a full step")
+  assert.equal(at(0, 0, -240), 300, "a double notch moves twice as far")
+  assert.equal(at(300, 0, 120), 150, "wheeling up moves back")
+  assert.equal(at(0, 0, 120), 0, "clamped at the top")
+  assert.equal(at(600, 0, -120), 600, "clamped at the bottom")
+  assert.equal(at(500, 0, -120), 600, "a step past the end stops at the end")
+  assert.equal(at(100, -37, -120), 137, "touchpad pixel deltas win over the notch step")
+  assert.equal(at(100, 0, 0), 100, "a horizontal-only wheel leaves the position alone")
+  assert.equal(M.wheelContentY(0, 200, 400, 0, -120, 150), 0, "no range means no movement")
+  assert.equal(M.wheelContentY(null, NaN, undefined, null, -120, 150), 0, "junk input is inert")
+})
