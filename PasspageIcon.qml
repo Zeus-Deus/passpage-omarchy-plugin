@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Native rendering of the passpage stamp mark (the site's LogoMark.tsx):
@@ -11,8 +12,8 @@ Item {
   id: root
 
   property real iconSize: Style.font.icon
-  property color color: Color.foreground
-  property color badgeColor: Color.urgent
+  property color color: Commons.Color.foreground
+  property color badgeColor: Commons.Color.urgent
   property bool warning: false
   property bool showInset: iconSize >= 18
 
@@ -74,12 +75,12 @@ Item {
     anchors.bottom: parent.bottom
     anchors.rightMargin: -width * 0.15
     anchors.bottomMargin: -width * 0.15
-    borderSpec: Border.flat(Color.popups.background, 1)
+    borderSpec: Border.flat(Commons.Color.popups.background, 1)
 
     Text {
       anchors.centerIn: parent
       text: "!"
-      color: Color.background
+      color: Commons.Color.background
       font.family: Style.font.family
       font.pixelSize: Math.max(6, parent.height * 0.72)
       font.bold: true

@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -28,11 +29,11 @@ Panel {
   readonly property bool overlayOpen: pendingDelete !== null
   readonly property bool editorOpen: editingSlug !== ""
 
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property color hoverFill: Style.hoverFillFor(foreground, Color.accent)
+  readonly property color hoverFill: Style.hoverFillFor(foreground, Commons.Color.accent)
   readonly property bool headerHasCursor: cursorActive && focusSection === "header"
   // No usable key (missing, unsafe, or invalid) hides share data and counts
   // entirely — nothing key-derived may look alive without a key behind it.
@@ -293,12 +294,12 @@ Panel {
               anchors.bottom: parent.bottom
               anchors.rightMargin: -width * 0.25
               anchors.bottomMargin: -width * 0.1
-              borderSpec: Border.flat(Color.bar.background, 1)
+              borderSpec: Border.flat(Commons.Color.bar.background, 1)
 
               Text {
                 anchors.centerIn: parent
                 text: "!"
-                color: Color.background
+                color: Commons.Color.background
                 font.family: root.fontFamily
                 font.pixelSize: Math.max(6, parent.height * 0.72)
                 font.bold: true
@@ -703,8 +704,8 @@ Panel {
         visible: row.isActive
         iconText: row.copied ? "󰄬" : "󰆏"
         tooltipText: row.copied ? "Copied" : "Copy link (c)"
-        foreground: row.copied ? Color.accent : root.foreground
-        hoverColor: row.copied ? Color.accent : root.foreground
+        foreground: row.copied ? Commons.Color.accent : root.foreground
+        hoverColor: row.copied ? Commons.Color.accent : root.foreground
         fontFamily: root.fontFamily
         enabled: !row.isBusy
         Layout.alignment: Qt.AlignVCenter
