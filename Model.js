@@ -18,6 +18,10 @@ var MAX_TITLE = 140                          // the backend's own limit
 var MAX_TIMESTAMP = 64
 var MAX_PASSCODE = 256
 var SLUG_RE = /^[A-Za-z0-9_-]+$/
+var MAX_NAME = 80
+var MAX_MEMBERS = 200
+var USER_ID_RE = /^[A-Za-z0-9-]{1,64}$/
+var AGENT_NAME = "Omarchy"
 
 // curl is invoked with `write-out = "\n%{http_code}"`, so the last line of
 // stdout is the status and everything before it is the body.
@@ -176,7 +180,8 @@ function normaliseShares(list) {
       view_count: boundedCount(s.view_count),
       track_views: s.track_views === true,
       file_count: boundedCount(s.file_count),
-      size_bytes: boundedCount(s.size_bytes)
+      size_bytes: boundedCount(s.size_bytes),
+      collab_enabled: s.collab_enabled === true
     })
   }
   out.sort(function(a, b) {
@@ -193,7 +198,7 @@ function normaliseShares(list) {
 // resets the Repeater and rebuilds every row delegate, which would destroy
 // an open passcode editor and churn objects on every minute tick / poll.
 var SHARE_FIELDS = ["slug", "url", "title", "has_passcode", "expires_at",
-  "created_at", "view_count", "track_views", "file_count", "size_bytes"]
+  "created_at", "view_count", "track_views", "file_count", "size_bytes", "collab_enabled"]
 
 function sameShareLists(a, b) {
   if (!(a instanceof Array) || !(b instanceof Array) || a.length !== b.length) return false
@@ -297,6 +302,9 @@ function curlConfig(opts) {
     "url = " + curlQuote(opts.url),
     "header = " + curlQuote("Authorization: Bearer " + opts.key),
     "header = " + curlQuote("Accept: application/json"),
+    // Names the plugin in a collab share's activity feed ("Kaan's Omarchy")
+    // instead of the API key's label.
+    "header = " + curlQuote("X-Passpage-Agent: " + AGENT_NAME),
     // Loopback requests must never transit an http(s)_proxy from the
     // environment — the Bearer header would cross it in cleartext. Remote
     // https requests still honour any configured proxy.
@@ -364,6 +372,125 @@ function listUrl(baseUrl) { return apiUrl(baseUrl, "/api/shares/_mine") }
 function deleteUrl(baseUrl, slug) { return apiUrl(baseUrl, "/api/shares/" + encodeURIComponent(slug) + "/_api") }
 function passcodeUrl(baseUrl, slug) { return apiUrl(baseUrl, "/api/shares/" + encodeURIComponent(slug) + "/passcode/_api") }
 
+// Collab routes take the bearer key directly (no "/_api" twins).
+function collabUrl(baseUrl, slug) { return apiUrl(baseUrl, "/api/shares/" + encodeURIComponent(slug) + "/collab") }
+function collabInviteUrl(baseUrl, slug) { return collabUrl(baseUrl, slug) + "/invite" }
+function collabMemberUrl(baseUrl, slug, userId) { return collabUrl(baseUrl, slug) + "/members/" + encodeURIComponent(userId) }
+function collabSharesUrl(baseUrl) { return apiUrl(baseUrl, "/api/collab/shares") }
+// Built locally from the validated baseUrl + slug rather than trusting the
+// response's live_url, so a hostile endpoint can't redirect the browser.
+function liveUrl(baseUrl, slug) {
+  return SLUG_RE.test(String(slug || "")) ? String(baseUrl || "") + "/live/" + slug : ""
+}
+
+// CollabInfo from GET/PUT /api/shares/<slug>/collab. Accepted only if it
+// describes the slug we asked about; members are bounded and sanitized.
+// The invite link is a bearer secret for joining: it must be a plain
+// http(s) URL whose path is /join/<this slug>/<code>, or it is dropped.
+function normaliseCollabInfo(data, slug) {
+  if (!data || typeof data !== "object" || data instanceof Array || data.slug !== slug) return null
+  var invite = boundedUrl(data.invite_url)
+  var m = /^https?:\/\/[^/]+(?:\/[^?#]*)?\/join\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)$/.exec(invite)
+  if (!m || m[1] !== slug) invite = ""
+  var members = []
+  var seen = Object.create(null)
+  var list = data.members instanceof Array ? data.members : []
+  for (var i = 0; i < list.length && members.length < MAX_MEMBERS; i++) {
+    var x = list[i]
+    if (!x || typeof x !== "object") continue
+    var id = typeof x.user_id === "string" ? x.user_id : ""
+    if (!USER_ID_RE.test(id) || seen[id]) continue
+    seen[id] = true
+    var name = sanitizeText(x.name, MAX_NAME)
+    members.push({ user_id: id, name: name === "" ? "Someone" : name, role: x.role === "owner" ? "owner" : "editor" })
+  }
+  var limits = data.limits && typeof data.limits === "object" ? data.limits : {}
+  var cap = limits.max_members
+  return {
+    slug: slug,
+    enabled: data.enabled === true,
+    invite_url: data.enabled === true ? invite : "",
+    members: members,
+    max_members: typeof cap === "number" && isFinite(cap) && cap >= 0 ? Math.floor(cap) : null,
+    rev: boundedCount(data.rev)
+  }
+}
+
+function editorsOf(info) {
+  var out = []
+  var list = info && info.members instanceof Array ? info.members : []
+  for (var i = 0; i < list.length; i++) if (list[i].role === "editor") out.push(list[i])
+  return out
+}
+
+// "2 / 3 editors", "1 editor", "No editors yet" — the cap is the owner's plan.
+function editorsText(info) {
+  var n = editorsOf(info).length
+  var cap = info ? info.max_members : null
+  if (cap === null || cap === undefined) return n === 0 ? "No editors yet" : plural(n, "editor")
+  return n + " / " + cap + " editors"
+}
+
+// What an invite link looks like on screen: host + /join/ with the slug and
+// code masked, so a screenshot or screen share never leaks a working invite.
+function maskedInvite(url) {
+  var m = /^https?:\/\/([^/]+)((?:\/[^?#]*)?\/join\/)[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.exec(String(url || ""))
+  return m ? m[1] + m[2] + "\u2022\u2022\u2022\u2022\u2022\u2022" : ""
+}
+
+// GET /api/collab/shares → collab pages other people invited us to edit.
+// Our own collab shares are already rows in the main list, so only
+// role "editor" entries are kept. Same bounds as normaliseShares.
+function normaliseSharedWithMe(list) {
+  if (!(list instanceof Array)) return []
+  var out = []
+  var seen = Object.create(null)
+  for (var i = 0; i < list.length && out.length < MAX_SHARES; i++) {
+    var s = list[i]
+    if (!s || typeof s !== "object" || s.role !== "editor") continue
+    var slug = typeof s.slug === "string" ? s.slug : ""
+    if (slug === "" || slug.length > MAX_SLUG || !SLUG_RE.test(slug) || seen[slug]) continue
+    seen[slug] = true
+    out.push({
+      slug: slug,
+      url: boundedUrl(s.url),
+      title: sanitizeText(s.title, MAX_TITLE),
+      owner: sanitizeText(s.owner, MAX_NAME)
+    })
+  }
+  return out
+}
+
+var SHARED_FIELDS = ["slug", "url", "title", "owner"]
+
+function sameSharedLists(a, b) {
+  if (!(a instanceof Array) || !(b instanceof Array) || a.length !== b.length) return false
+  for (var i = 0; i < a.length; i++) {
+    for (var j = 0; j < SHARED_FIELDS.length; j++) {
+      if (!a[i] || !b[i] || a[i][SHARED_FIELDS[j]] !== b[i][SHARED_FIELDS[j]]) return false
+    }
+  }
+  return true
+}
+
+function sharedDetail(item) {
+  var owner = item ? String(item.owner || "") : ""
+  return owner !== "" ? "from " + owner + " · you can edit" : "you can edit"
+}
+
+// Delete confirmation copy. A collab share takes its editors' access with
+// it, so say so — with the count when the panel already knows it.
+function deleteMessage(share, info) {
+  var label = sanitizeText(displayTitle(share), 140)
+  var base = "Delete \u201c" + label + "\u201d? The link stops working immediately."
+  if (!share || !share.collab_enabled) return base
+  var n = info && info.slug === share.slug ? editorsOf(info).length : -1
+  if (n === 0) return base + " Live collaboration ends with it."
+  // No-break space keeps "2 editors" together when the dialog wraps.
+  if (n > 0) return base + " " + n + "\u00a0editor" + (n === 1 ? " loses" : "s lose") + " access."
+  return base + " Everyone you invited to edit loses access."
+}
+
 // Wheel arithmetic for the share list. Flickable's own wheel handling
 // starts a kinetic flick that decelerates almost at once, so a notch lands
 // barely a row further down. Touchpads report pixelDelta and are already
@@ -389,6 +516,11 @@ if (typeof module !== "undefined" && module.exports) {
     rowDetail: rowDetail, heroMeta: heroMeta, curlQuote: curlQuote, curlConfig: curlConfig,
     sameShareLists: sameShareLists,
     listUrl: listUrl, deleteUrl: deleteUrl, passcodeUrl: passcodeUrl, validatedBaseUrl: validatedBaseUrl,
+    collabUrl: collabUrl, collabInviteUrl: collabInviteUrl, collabMemberUrl: collabMemberUrl,
+    collabSharesUrl: collabSharesUrl, liveUrl: liveUrl, normaliseCollabInfo: normaliseCollabInfo,
+    editorsOf: editorsOf, editorsText: editorsText, maskedInvite: maskedInvite,
+    normaliseSharedWithMe: normaliseSharedWithMe, sameSharedLists: sameSharedLists,
+    sharedDetail: sharedDetail, deleteMessage: deleteMessage, AGENT_NAME: AGENT_NAME,
     sanitizeText: sanitizeText, sanitizeKey: sanitizeKey, keyReadCommand: keyReadCommand,
     parseKeyReadOutput: parseKeyReadOutput,
     MAX_RESPONSE_BYTES: MAX_RESPONSE_BYTES, MAX_STDERR_BYTES: MAX_STDERR_BYTES, MAX_SHARES: MAX_SHARES,

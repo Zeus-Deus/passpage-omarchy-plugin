@@ -31,6 +31,12 @@ agents, not from this plugin.
   - `PATCH /api/shares/<slug>/passcode/_api` `{"passcode": "x" | null}`
   - `DELETE /api/shares/<slug>/_api` → 204
   - `PATCH /api/shares/<slug>/title/_api` `{"title": "x" | null}`
+  - Collab routes take the bearer key directly (no `/_api` twins):
+    `GET|PUT /api/shares/<slug>/collab` (`{"enabled": bool}`) → `CollabInfo`,
+    `POST …/collab/invite` (rotate), `DELETE …/collab/members/<user_id>`
+    (also rotates the invite), `GET /api/collab/shares` (owned + joined).
+    The plugin sends `X-Passpage-Agent: Omarchy` so the activity feed reads
+    "<you> · Omarchy".
   - Errors: `{"detail": "..."}`; 401 = missing/bad key.
   Bare paths (no `/_api`) are cookie-only and reject bearer tokens.
 - `ShareOut`: `slug, url, title|null, has_passcode, expires_at|null,
@@ -41,8 +47,9 @@ agents, not from this plugin.
 ## Layout
 
 - `manifest.json` — id `space.passpage.shares`, kind `bar-widget`, entry `Panel.qml`.
-- `Panel.qml` — bar button + `KeyboardPanel`; cursor model, rows, inline
-  passcode editor, delete `ConfirmDialog`, `IpcHandler` target `passpage`.
+- `Panel.qml` — bar button + `KeyboardPanel`; cursor model (header → active →
+  shared with you → expired), rows, inline passcode editor and collab pane,
+  delete / remove-editor `ConfirmDialog`, `IpcHandler` target `passpage`.
 - `Service.qml` — key `FileView`, curl `Process`es, share state, polling.
 - `PasspageIcon.qml` — the stamp mark drawn natively ("P" under 16px, "PP" above).
 - `Model.js` + `tests/model.test.js` — pure helpers; `node --test tests/model.test.js`.

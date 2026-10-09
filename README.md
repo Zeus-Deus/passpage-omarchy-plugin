@@ -7,9 +7,17 @@ Your [passpage.space](https://passpage.space) shares in the Omarchy bar.
 The bar shows a page glyph with the number of active shares. Click it for a
 panel that lists every share with its expiry, passcode state and view count,
 plus quick actions: copy link, open in browser, set / change / remove
-passcode, delete. Shares expiring within 24 h are highlighted; expired but
-not-yet-swept shares sit in a dimmed **Expired** section so you can delete
-them early.
+passcode, live collaboration, delete. Shares expiring within 24 h are
+highlighted; expired but not-yet-swept shares sit in a dimmed **Expired**
+section so you can delete them early.
+
+**Live collaboration.** The 󰀏 button on a share opens the same settings as
+the dashboard's collaborate dialog: switch collaboration on or off, copy or
+replace the invite link, see your editors against your plan's cap, remove
+one, and open the live view. Shares with collaboration on show the button in
+the accent colour. Pages other people invited you to edit are listed under
+**Shared with you**, with copy link and open live view. Presence, activity,
+chat and restore stay in the browser's live view.
 
 Publishing is intentionally not here — pages are published by agents or the
 `passpage` CLI through the API. This plugin is for seeing and managing what
@@ -56,6 +64,7 @@ only when Omarchy asks it to).
 | Copy link | click row or 󰆏 | `Enter` / `c` |
 | Open in browser | 󰖟 | `o` |
 | Set / change / remove passcode | 󰌿 / 󰌾 | `p` |
+| Collaboration settings | 󰀏 / 󰀎 | `s` |
 | Delete (with confirmation) | 󰆴 | `x` |
 | Refresh | 󰑐 or middle-click the bar icon | `r` |
 | Open passpage dashboard | — | `d` |
@@ -66,15 +75,33 @@ dialog), `Tab` switches to the neighbouring bar panel.
 Passcode editor: type and press `Enter` to set; leave it empty and press
 `Enter` to remove an existing passcode.
 
+Collaboration pane (`s` on a share, `Esc` closes it):
+
+| Action | Key |
+|---|---|
+| Turn collaboration on / off | `t` |
+| Copy invite link | `i` |
+| New invite link (the old one stops working) | `n` |
+| Open live view | `v` (also on a **Shared with you** row, or `o` there) |
+| Remove an editor (with confirmation) | click 󰀕 |
+
+The invite link is shown masked (`passpage.space/join/••••••`) because it is
+a join credential and panels end up in screenshots; copy puts the real link
+on the clipboard. Removing an editor also replaces the invite link, as on the
+dashboard. Deleting a collab share says how many editors lose access.
+
 IPC:
 
 ```bash
 omarchy-shell passpage toggle | open | close | refresh | status
+omarchy-shell passpage collab <slug>   # open the collab pane for a share
 ```
 
 `status` returns JSON, e.g.
 `{"loaded":true,"active":11,"expired":0,"expiringSoon":1,"error":"",
-"keyMissing":false,"keyInvalid":false,"keyUnsafe":false}`.
+"keyMissing":false,"keyInvalid":false,"keyUnsafe":false,"collabOn":1,
+"sharedWithMe":1,"collabPane":"","collabEnabled":null,"editors":null,
+"collabBusy":"","collabError":"","cursor":""}`.
 
 ## Configure
 

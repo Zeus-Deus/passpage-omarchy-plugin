@@ -10,7 +10,8 @@ import "Model.js" as Model
 
 // Bar widget + popup for passpage.space. The bar shows a page glyph with
 // the active-share count; the panel lists shares with copy / open / passcode
-// / delete, keyboard-driven like the first-party tailscale and network panels.
+// / collaborate / delete, plus pages others invited you to edit,
+// keyboard-driven like the first-party tailscale and network panels.
 Panel {
   id: root
   moduleName: "space.passpage.shares"
@@ -21,13 +22,18 @@ Panel {
   property string focusSection: "header"
   property int activeIndex: 0
   property int expiredIndex: 0
+  property int sharedIndex: 0
   property bool cursorActive: false
 
-  // Inline passcode editor + delete confirmation own the keys while open.
+  // Inline passcode editor + confirmations own the keys while open. The
+  // collab pane does not: its shortcuts (t/i/n/v) ride the normal catcher.
   property string editingSlug: ""
+  property string collabSlug: ""
   property var pendingDelete: null
-  readonly property bool overlayOpen: pendingDelete !== null
+  property var pendingRemove: null   // { slug, title, user_id, name }
+  readonly property bool overlayOpen: pendingDelete !== null || pendingRemove !== null
   readonly property bool editorOpen: editingSlug !== ""
+  readonly property bool collabOpen: collabSlug !== ""
 
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
@@ -40,6 +46,7 @@ Panel {
   readonly property bool keyUsable: !passpage.keyMissing && !passpage.keyInvalid && !passpage.keyUnsafe
   readonly property bool attention: passpage.keyMissing || passpage.keyInvalid || passpage.keyUnsafe || passpage.error !== ""
   readonly property bool showExpired: root.keyUsable && passpage.expired.length > 0
+  readonly property bool showShared: root.keyUsable && passpage.sharedWithMe.length > 0
   readonly property string heroMeta: passpage.keyUnsafe
     ? "Key file is unsafe \u2014 check permissions"
     : passpage.keyInvalid ? "API key file looks invalid" : Model.heroMeta({
@@ -51,44 +58,66 @@ Panel {
   // One wheel notch = three share rows: row padding plus the two text lines.
   readonly property int wheelStep: (Style.spacing.rowPaddingX + Style.space(38)) * 3
 
+  function sectionLength(section) {
+    if (section === "active") return passpage.active.length
+    if (section === "shared") return showShared ? passpage.sharedWithMe.length : 0
+    if (section === "expired") return showExpired ? passpage.expired.length : 0
+    return 1
+  }
+
+  function sectionIndex(section) {
+    return section === "active" ? activeIndex : section === "shared" ? sharedIndex : expiredIndex
+  }
+
+  function setSectionIndex(section, index) {
+    if (section === "active") activeIndex = index
+    else if (section === "shared") sharedIndex = index
+    else if (section === "expired") expiredIndex = index
+  }
+
+  // Sections the cursor can visit, top to bottom.
+  function cursorSections() {
+    var out = ["header"]
+    var all = ["active", "shared", "expired"]
+    for (var i = 0; i < all.length; i++) if (sectionLength(all[i]) > 0) out.push(all[i])
+    return out
+  }
+
   function selectedShare() {
-    if (focusSection === "active") return passpage.active[Math.max(0, Math.min(activeIndex, passpage.active.length - 1))] || null
-    if (focusSection === "expired") return passpage.expired[Math.max(0, Math.min(expiredIndex, passpage.expired.length - 1))] || null
-    return null
+    if (focusSection === "header") return null
+    var list = focusSection === "active" ? passpage.active
+      : focusSection === "shared" ? passpage.sharedWithMe : passpage.expired
+    return list[Math.max(0, Math.min(sectionIndex(focusSection), list.length - 1))] || null
   }
 
   function ensureCursor() {
     if (activeIndex >= passpage.active.length) activeIndex = Math.max(0, passpage.active.length - 1)
+    if (sharedIndex >= passpage.sharedWithMe.length) sharedIndex = Math.max(0, passpage.sharedWithMe.length - 1)
     if (expiredIndex >= passpage.expired.length) expiredIndex = Math.max(0, passpage.expired.length - 1)
-    if (focusSection === "active" && passpage.active.length === 0) focusSection = showExpired ? "expired" : "header"
-    if (focusSection === "expired" && !showExpired) focusSection = passpage.active.length > 0 ? "active" : "header"
+    if (focusSection !== "header" && sectionLength(focusSection) === 0) {
+      var sections = cursorSections()
+      focusSection = sections.length > 1 ? sections[1] : "header"
+    }
   }
 
   function moveCursor(dx, dy) {
     cursorActive = true
     ensureCursor()
     if (dy === 0) return
-    if (focusSection === "header") {
-      if (dy > 0) {
-        if (passpage.active.length > 0) focusSection = "active"
-        else if (showExpired) focusSection = "expired"
+    var sections = cursorSections()
+    var at = sections.indexOf(focusSection)
+    var index = sectionIndex(focusSection)
+    if (dy < 0) {
+      if (focusSection !== "header" && index > 0) setSectionIndex(focusSection, index - 1)
+      else if (at > 0) {
+        focusSection = sections[at - 1]
+        if (focusSection !== "header") setSectionIndex(focusSection, sectionLength(focusSection) - 1)
       }
-    } else if (focusSection === "active") {
-      if (dy < 0) {
-        if (activeIndex <= 0) focusSection = "header"
-        else activeIndex--
-      } else if (activeIndex < passpage.active.length - 1) {
-        activeIndex++
-      } else if (showExpired) {
-        focusSection = "expired"
-        expiredIndex = 0
-      }
-    } else if (focusSection === "expired") {
-      if (dy < 0) {
-        if (expiredIndex <= 0) focusSection = passpage.active.length > 0 ? "active" : "header"
-        else expiredIndex--
-      } else if (expiredIndex < passpage.expired.length - 1) {
-        expiredIndex++
+    } else {
+      if (focusSection !== "header" && index < sectionLength(focusSection) - 1) setSectionIndex(focusSection, index + 1)
+      else if (at < sections.length - 1) {
+        focusSection = sections[at + 1]
+        setSectionIndex(focusSection, 0)
       }
     }
     ensureCursor()
@@ -102,15 +131,50 @@ Panel {
     else copySelected()
   }
 
-  // Expired links are dead, so copy/open only apply to active rows.
+  // Expired links are dead, so copy/open only apply to live rows. A page
+  // shared with you opens in its live view, where editing happens.
   function copySelected() {
     var share = selectedShare()
-    if (share && focusSection === "active") passpage.copyLink(share)
+    if (share && (focusSection === "active" || focusSection === "shared")) passpage.copyLink(share)
   }
 
   function openSelected() {
     var share = selectedShare()
-    if (share && focusSection === "active") passpage.openInBrowser(share)
+    if (!share) return
+    if (focusSection === "active") passpage.openInBrowser(share)
+    else if (focusSection === "shared") passpage.openLive(share.slug)
+  }
+
+  function toggleCollabSelected() {
+    var share = selectedShare()
+    if (share && focusSection === "active") toggleCollab(share)
+  }
+
+  // Pane shortcuts act on the open collab pane, wherever the cursor is.
+  function collabPaneInfo() {
+    var info = passpage.collabInfo
+    return collabOpen && info && info.slug === collabSlug ? info : null
+  }
+
+  function toggleCollabEnabled() {
+    var info = collabPaneInfo()
+    if (info && passpage.collabBusy === "") passpage.setCollab(collabSlug, !info.enabled)
+  }
+
+  function copyInvite() {
+    var info = collabPaneInfo()
+    if (info && info.enabled) passpage.copyInvite()
+  }
+
+  function rotateInvite() {
+    var info = collabPaneInfo()
+    if (info && info.enabled && passpage.collabBusy === "") passpage.rotateInvite(collabSlug)
+  }
+
+  function openLiveView() {
+    if (collabOpen) { passpage.openLive(collabSlug); return }
+    var share = selectedShare()
+    if (share && (focusSection === "shared" || (focusSection === "active" && share.collab_enabled))) passpage.openLive(share.slug)
   }
 
   function editPasscodeSelected() {
@@ -123,8 +187,24 @@ Panel {
     if (share) requestDelete(share)
   }
 
+  // One inline pane at a time: the collab pane and the passcode editor
+  // replace each other.
+  function toggleCollab(share) {
+    if (!share || passpage.busySlug === share.slug) return
+    editingSlug = ""
+    collabSlug = collabSlug === share.slug ? "" : share.slug
+    if (collabSlug !== "") passpage.loadCollab(collabSlug)
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function closeCollab() {
+    collabSlug = ""
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
   function togglePasscodeEditor(share) {
     if (!share || passpage.busySlug === share.slug) return
+    collabSlug = ""
     editingSlug = editingSlug === share.slug ? "" : share.slug
     if (editingSlug === "") Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -137,15 +217,27 @@ Panel {
   function requestDelete(share) {
     if (!share || passpage.busySlug !== "") return
     editingSlug = ""
+    collabSlug = ""
     pendingDelete = share
+    // Collab shares take their editors' access with them; fetch the count
+    // so the confirmation can say how many people that is.
+    if (share.collab_enabled) passpage.loadCollab(share.slug)
     // Default to Cancel: x → Enter must never delete without a deliberate
     // choice of the destructive option.
     confirm.selectedIndex = 0
     Qt.callLater(function() { confirmKeys.forceActiveFocus() })
   }
 
+  function requestRemove(share, member) {
+    if (!share || !member || passpage.collabBusy !== "") return
+    pendingRemove = { slug: share.slug, title: Model.displayTitle(share), user_id: member.user_id, name: member.name }
+    confirm.selectedIndex = 0
+    Qt.callLater(function() { confirmKeys.forceActiveFocus() })
+  }
+
   function closeConfirm() {
     pendingDelete = null
+    pendingRemove = null
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -167,8 +259,8 @@ Panel {
 
   function scrollCursorIntoView() {
     if (focusSection === "header") { if (panelFlick) panelFlick.contentY = 0; return }
-    var column = focusSection === "active" ? activeColumn : expiredColumn
-    var index = focusSection === "active" ? activeIndex : expiredIndex
+    var column = focusSection === "active" ? activeColumn : focusSection === "shared" ? sharedColumn : expiredColumn
+    var index = sectionIndex(focusSection)
     if (column && index >= 0 && index < column.children.length) scrollItemIntoView(column.children[index])
   }
 
@@ -176,8 +268,7 @@ Panel {
     if (overlayOpen) return
     cursorActive = true
     focusSection = section
-    if (section === "active") activeIndex = index
-    else expiredIndex = index
+    setSectionIndex(section, index)
   }
 
   function setHeaderCursor() {
@@ -189,6 +280,7 @@ Panel {
   function dismiss() {
     if (overlayOpen) { closeConfirm(); return }
     if (editorOpen) { cancelPasscodeEditor(); return }
+    if (collabOpen) { closeCollab(); return }
     close()
   }
 
@@ -204,17 +296,26 @@ Panel {
       Qt.callLater(function() { keyCatcher.forceActiveFocus() })
     } else {
       editingSlug = ""
+      collabSlug = ""
       pendingDelete = null
+      pendingRemove = null
     }
   }
   onActiveIndexChanged: scrollCursorIntoView()
   onExpiredIndexChanged: scrollCursorIntoView()
+  onSharedIndexChanged: scrollCursorIntoView()
 
   Service {
     id: passpage
     settings: root.settings
+    panelOpen: root.opened
     onSharesUpdated: {
       root.ensureCursor()
+      if (root.collabSlug !== "") {
+        var open = passpage.shareBySlug(root.collabSlug)
+        if (!open || !Model.isActive(open, passpage.nowMs)) root.closeCollab()
+      }
+      if (root.pendingRemove && !passpage.shareBySlug(root.pendingRemove.slug)) root.closeConfirm()
       // A share can vanish under an open editor/dialog (refresh, delete
       // elsewhere) — orphaned overlay state would block keyboard input.
       if (root.editingSlug !== "" && !passpage.shareBySlug(root.editingSlug)) root.cancelPasscodeEditor()
@@ -223,6 +324,9 @@ Panel {
     onActionFinished: function(kind, slug, ok) {
       if (ok && root.editingSlug === slug) root.cancelPasscodeEditor()
       if (root.pendingDelete && root.pendingDelete.slug === slug) root.closeConfirm()
+    }
+    onCollabFinished: function(kind, slug, ok) {
+      if (kind === "remove" && root.pendingRemove && root.pendingRemove.slug === slug) root.closeConfirm()
     }
   }
 
@@ -234,10 +338,35 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { passpage.refresh(); return "ok" }
+    // Open (or close) the collab pane for one of your active shares.
+    function collab(slug: string): string {
+      var share = passpage.shareBySlug(slug)
+      if (!share || !Model.isActive(share, passpage.nowMs)) return "not an active share"
+      root.open()
+      root.toggleCollab(share)
+      var opened = root.collabSlug === slug
+      // Opening resets the cursor; place it on the row once that has run.
+      Qt.callLater(function() {
+        // By slug: `active` keeps its old row objects when nothing changed,
+        // so identity against a refreshed share would miss.
+        for (var i = 0; i < passpage.active.length; i++) {
+          if (passpage.active[i].slug === slug) { root.setRowCursor("active", i); break }
+        }
+        root.scrollCursorIntoView()
+      })
+      return opened ? "open" : "closed"
+    }
     function status(): string {
+      var info = passpage.collabInfo
+      var collabOn = 0
+      for (var i = 0; i < passpage.active.length; i++) if (passpage.active[i].collab_enabled) collabOn++
       return JSON.stringify({ loaded: passpage.loaded, active: passpage.activeCount, expired: passpage.expiredCount,
         expiringSoon: passpage.soonCount, error: passpage.error, keyMissing: passpage.keyMissing,
-        keyInvalid: passpage.keyInvalid, keyUnsafe: passpage.keyUnsafe })
+        keyInvalid: passpage.keyInvalid, keyUnsafe: passpage.keyUnsafe,
+        collabOn: collabOn, sharedWithMe: passpage.sharedWithMe.length, collabPane: root.collabSlug,
+        collabEnabled: info ? info.enabled : null, editors: info ? Model.editorsOf(info).length : null,
+        collabBusy: passpage.collabBusy, collabError: passpage.collabError,
+        cursor: root.cursorActive ? root.focusSection + ":" + root.sectionIndex(root.focusSection) : "" })
     }
   }
 
@@ -349,6 +478,11 @@ Panel {
         else if (t === "c" || t === "C") root.copySelected()
         else if (t === "o" || t === "O") root.openSelected()
         else if (t === "p" || t === "P") root.editPasscodeSelected()
+        else if (t === "s" || t === "S") root.toggleCollabSelected()
+        else if (t === "v" || t === "V") root.openLiveView()
+        else if (t === "t" || t === "T") root.toggleCollabEnabled()
+        else if (t === "i" || t === "I") root.copyInvite()
+        else if (t === "n" || t === "N") root.rotateInvite()
         else if (t === "d" || t === "D") passpage.openInBrowser({ url: root.dashboardUrl })
       }
 
@@ -549,6 +683,40 @@ Panel {
           }
 
           PanelSeparator {
+            visible: root.showShared
+            foreground: root.foreground
+          }
+
+          Column {
+            visible: root.showShared
+            width: parent.width
+            spacing: Style.space(10)
+
+            PanelSectionHeader {
+              text: "SHARED WITH YOU"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Column {
+              id: sharedColumn
+              width: parent.width
+              spacing: Style.space(6)
+
+              Repeater {
+                model: root.opened ? passpage.sharedWithMe : []
+                SharedRow {
+                  required property var modelData
+                  required property int index
+                  width: sharedColumn.width
+                  item: modelData
+                  rowIndex: index
+                }
+              }
+            }
+          }
+
+          PanelSeparator {
             visible: root.showExpired
             foreground: root.foreground
           }
@@ -603,20 +771,32 @@ Panel {
         focus: visible
         Keys.onPressed: function(event) { if (confirm.handleKey(event)) event.accepted = true }
 
+        // Takes hover from the row buttons underneath, so the tooltip of the
+        // button that opened the dialog doesn't stay drawn over it.
+        MouseArea {
+          anchors.fill: parent
+          hoverEnabled: true
+          acceptedButtons: Qt.NoButton
+        }
+
         ConfirmDialog {
           id: confirm
           anchors.fill: parent
           opened: root.overlayOpen
           // displayTitle is sanitized at ingestion; the extra pass keeps this
           // kit boundary (AutoText-capable) safe against future regressions.
-          message: root.pendingDelete
-            ? "Delete “" + Model.sanitizeText(Model.displayTitle(root.pendingDelete), 140) + "”? The link stops working immediately."
-            : ""
-          confirmText: "Delete"
+          message: root.pendingRemove
+            ? "Remove " + Model.sanitizeText(root.pendingRemove.name, 80) + " from “"
+              + Model.sanitizeText(root.pendingRemove.title, 140) + "”? They lose edit access and the invite link is replaced."
+            : root.pendingDelete ? Model.deleteMessage(root.pendingDelete, passpage.collabInfo) : ""
+          confirmText: root.pendingRemove ? "Remove" : "Delete"
           foreground: root.foreground
           fontFamily: root.fontFamily
           onCanceled: root.closeConfirm()
-          onConfirmed: passpage.deleteShare(root.pendingDelete)
+          onConfirmed: {
+            if (root.pendingRemove) passpage.removeMember(root.pendingRemove.slug, root.pendingRemove.user_id)
+            else passpage.deleteShare(root.pendingDelete)
+          }
         }
       }
     }
@@ -630,6 +810,8 @@ Panel {
     readonly property bool isActive: section === "active"
     readonly property string slug: share ? String(share.slug || "") : ""
     readonly property bool editing: root.editingSlug === slug
+    readonly property bool collabOpen: root.collabSlug === slug && isActive
+    readonly property bool collabOn: !!(share && share.collab_enabled)
     readonly property bool isBusy: passpage.busySlug === slug
     readonly property bool copied: passpage.copiedSlug === slug
     readonly property bool soon: share ? Model.isExpiringSoon(share, passpage.nowMs) : false
@@ -645,6 +827,7 @@ Panel {
 
     implicitHeight: Style.spacing.rowPaddingX + rowContent.implicitHeight
       + (editing ? editor.implicitHeight + Style.space(8) : 0)
+      + (collabOpen ? collabPane.implicitHeight + Style.space(14) : 0)
 
     Behavior on implicitHeight { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
 
@@ -654,7 +837,7 @@ Panel {
       hoverEnabled: true
       cursorShape: Qt.ArrowCursor
       onContainsMouseChanged: if (containsMouse) root.setRowCursor(row.section, row.rowIndex)
-      onClicked: if (!row.editing && row.isActive) passpage.copyLink(row.share)
+      onClicked: if (!row.editing && !row.collabOpen && row.isActive) passpage.copyLink(row.share)
     }
 
     RowLayout {
@@ -668,6 +851,7 @@ Panel {
       spacing: Style.space(8)
 
       Text {
+        id: leadingIcon
         text: row.share && row.share.has_passcode ? "󰌾" : "󰈙"
         color: row.textColor
         font.family: root.fontFamily
@@ -721,6 +905,20 @@ Panel {
         enabled: !row.isBusy
         Layout.alignment: Qt.AlignVCenter
         onClicked: passpage.openInBrowser(row.share)
+      }
+
+      // Accent while collaboration is on, so it reads at a glance.
+      PanelActionButton {
+        visible: row.isActive
+        iconText: row.collabOn ? "󰀎" : "󰀏"
+        tooltipText: row.collabOn ? "Collaboration on \u2014 invite, editors (s)" : "Collaborate (s)"
+        foreground: row.collabOn ? Commons.Color.accent : root.foreground
+        hoverColor: row.collabOn ? Commons.Color.accent : root.foreground
+        fontFamily: root.fontFamily
+        hasCursor: row.collabOpen
+        enabled: !row.isBusy
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: root.toggleCollab(row.share)
       }
 
       PanelActionButton {
@@ -807,6 +1005,271 @@ Panel {
         foreground: root.foreground
         fontFamily: root.fontFamily
         onClicked: root.cancelPasscodeEditor()
+      }
+    }
+
+    // Inline collaboration pane: on/off, invite link, editors. Mirrors the
+    // dashboard's dialog; the live view itself stays in the browser.
+    Column {
+      id: collabPane
+      visible: row.collabOpen
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.top: rowContent.bottom
+      anchors.topMargin: Style.space(10)
+      // Indented to the title column so the pane reads as part of this row.
+      anchors.leftMargin: Style.space(10) + leadingIcon.width + Style.space(8)
+      anchors.rightMargin: Style.space(8)
+      spacing: Style.space(8)
+
+      readonly property var info: passpage.collabInfo && passpage.collabInfo.slug === row.slug ? passpage.collabInfo : null
+      readonly property bool on: info ? info.enabled : row.collabOn
+      readonly property bool busy: passpage.collabBusy !== "" || !info
+      readonly property var editors: info ? Model.editorsOf(info) : []
+
+      RowLayout {
+        width: parent.width
+        spacing: Style.space(10)
+
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(2)
+
+          Text {
+            Layout.fillWidth: true
+            text: collabPane.on ? "Collaboration is on" : "Collaboration is off"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            elide: Text.ElideRight
+          }
+          Text {
+            Layout.fillWidth: true
+            text: collabPane.on
+              ? "Editors change files with their own agents. Every change can be restored."
+              : "Invite teammates to edit with their agents. The view link stays view-only."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+        }
+
+        ToggleSwitch {
+          Layout.alignment: Qt.AlignTop
+          Layout.rightMargin: Style.space(4)
+          cursorRing: false
+          checked: collabPane.on
+          busy: collabPane.busy
+          opacity: collabPane.busy ? 0.6 : 1.0
+          foreground: root.foreground
+          onToggled: root.toggleCollabEnabled()
+        }
+      }
+
+      // Invite link. Shown masked: it is a join credential, and panels end
+      // up in screenshots and screen shares. Copy puts the real one on the
+      // clipboard.
+      RowLayout {
+        visible: collabPane.on && collabPane.info !== null && collabPane.info.invite_url !== ""
+        width: parent.width
+        spacing: Style.space(4)
+
+        Text {
+          text: "Invite"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          Layout.alignment: Qt.AlignVCenter
+        }
+        Text {
+          Layout.fillWidth: true
+          Layout.leftMargin: Style.space(4)
+          text: collabPane.info ? Model.maskedInvite(collabPane.info.invite_url) : ""
+          textFormat: Text.PlainText
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideMiddle
+          Layout.alignment: Qt.AlignVCenter
+        }
+        PanelActionButton {
+          iconText: "󰆏"
+          tooltipText: "Copy invite link (i)"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          enabled: !collabPane.busy
+          Layout.alignment: Qt.AlignVCenter
+          onClicked: root.copyInvite()
+        }
+        PanelActionButton {
+          iconText: "󰑐"
+          tooltipText: "New invite link \u2014 the old one stops working (n)"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          enabled: !collabPane.busy
+          Layout.alignment: Qt.AlignVCenter
+          onClicked: root.rotateInvite()
+        }
+        PanelActionButton {
+          iconText: "󰖟"
+          tooltipText: "Open live view (v)"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          Layout.alignment: Qt.AlignVCenter
+          onClicked: passpage.openLive(row.slug)
+        }
+      }
+
+      Text {
+        visible: collabPane.on && collabPane.info !== null
+        width: parent.width
+        text: Model.editorsText(collabPane.info)
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Repeater {
+        model: collabPane.on ? collabPane.editors : []
+        RowLayout {
+          required property var modelData
+          width: collabPane.width
+          spacing: Style.space(8)
+
+          Text {
+            text: "󰀄"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.icon
+            Layout.alignment: Qt.AlignVCenter
+          }
+          Text {
+            Layout.fillWidth: true
+            text: modelData.name
+            textFormat: Text.PlainText
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            elide: Text.ElideRight
+            Layout.alignment: Qt.AlignVCenter
+          }
+          PanelActionButton {
+            iconText: "󰀕"
+            tooltipText: "Remove editor"
+            foreground: root.foreground
+            hoverColor: root.urgent
+            fontFamily: root.fontFamily
+            enabled: !collabPane.busy
+            Layout.alignment: Qt.AlignVCenter
+            onClicked: root.requestRemove(row.share, modelData)
+          }
+        }
+      }
+
+      Text {
+        visible: !collabPane.info && passpage.collabError === ""
+        width: parent.width
+        text: "Loading collaboration settings\u2026"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        visible: passpage.collabError !== "" && passpage.collabWant === row.slug
+        width: parent.width
+        text: passpage.collabError
+        textFormat: Text.PlainText
+        color: root.urgent
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
+    }
+  }
+
+  // A collab page someone else owns and invited you to edit. Not yours, so
+  // no passcode / collaborate / delete: copy its link or open the live view.
+  component SharedRow: CursorSurface {
+    id: shared
+    property var item: null
+    property int rowIndex: 0
+    readonly property bool copied: item ? passpage.copiedSlug === item.slug : false
+
+    hasCursor: root.cursorActive && root.focusSection === "shared" && root.sharedIndex === rowIndex
+    foreground: root.foreground
+    fill: root.hoverFill
+    implicitHeight: Style.spacing.rowPaddingX + sharedContent.implicitHeight
+
+    MouseArea {
+      anchors.fill: parent
+      acceptedButtons: Qt.LeftButton
+      hoverEnabled: true
+      cursorShape: Qt.ArrowCursor
+      onContainsMouseChanged: if (containsMouse) root.setRowCursor("shared", shared.rowIndex)
+      onClicked: passpage.copyLink(shared.item)
+    }
+
+    RowLayout {
+      id: sharedContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.topMargin: Style.spacing.rowPaddingX / 2
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(8)
+      spacing: Style.space(8)
+
+      Text {
+        text: "󰀎"
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.icon
+        Layout.alignment: Qt.AlignVCenter
+      }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+
+        Text {
+          Layout.fillWidth: true
+          text: Model.displayTitle(shared.item)
+          textFormat: Text.PlainText
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
+        Text {
+          Layout.fillWidth: true
+          text: Model.sharedDetail(shared.item)
+          textFormat: Text.PlainText
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+      }
+
+      PanelActionButton {
+        iconText: shared.copied ? "󰄬" : "󰆏"
+        tooltipText: shared.copied ? "Copied" : "Copy link (c)"
+        foreground: shared.copied ? Commons.Color.accent : root.foreground
+        hoverColor: shared.copied ? Commons.Color.accent : root.foreground
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: passpage.copyLink(shared.item)
+      }
+
+      PanelActionButton {
+        iconText: "󰖟"
+        tooltipText: "Open live view (o)"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: passpage.openLive(shared.item.slug)
       }
     }
   }

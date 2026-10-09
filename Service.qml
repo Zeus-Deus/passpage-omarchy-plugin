@@ -29,6 +29,16 @@ Item {
   property string busySlug: ""       // share with an in-flight delete/passcode
   property string copiedSlug: ""     // row whose copy button briefly shows a check
 
+  // Live collaboration. One share's settings are loaded at a time: the one
+  // whose collab pane is open, or the one waiting on a delete confirm.
+  property bool panelOpen: false     // bound by Panel: the shared list only loads while open
+  property var sharedWithMe: []      // collab pages other people invited us to edit
+  property var collabInfo: null      // Model.normaliseCollabInfo() for collabInfo.slug
+  property string collabWant: ""     // slug whose settings should be loaded
+  property bool collabLoading: false
+  property string collabBusy: ""     // in-flight collab mutation kind
+  property string collabError: ""
+
   // Key state
   property string apiKey: ""
   property bool keyChecked: false
@@ -50,7 +60,7 @@ Item {
   readonly property bool baseUrlInvalid: baseUrl === ""
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 300, 30, 3600)
-  readonly property bool busy: keyProcess.running || listProcess.running || actionProcess.running
+  readonly property bool busy: keyProcess.running || listProcess.running || actionProcess.running || collabProcess.running
   readonly property int activeCount: active.length
   readonly property int expiredCount: expired.length
 
@@ -58,18 +68,23 @@ Item {
   // list response that started under stale conditions is discarded instead of
   // overwriting newer local state (e.g. a delete that already happened).
   property int generation: 0
+  // Bumped only when the key or baseUrl changes. Collab responses check this
+  // one, so an unrelated share action can't discard an open pane's settings.
+  property int targetGeneration: 0
 
   // Ticks once a minute so "expires in 45m" stays honest without a refetch.
   property double nowMs: Date.now()
 
   signal sharesUpdated()
   signal actionFinished(string kind, string slug, bool ok)
+  signal collabFinished(string kind, string slug, bool ok)
 
   // Target changed: stale rows from the old server must never drive delete or
   // passcode actions against the new one. generation++ also discards any
   // in-flight response that started under the old target.
   onBaseUrlChanged: {
     generation++
+    targetGeneration++
     clearShares()
     Qt.callLater(root.refresh)
   }
@@ -107,6 +122,10 @@ Item {
     soonCount = 0
     loaded = false
     error = ""
+    sharedWithMe = []
+    collabInfo = null
+    collabWant = ""
+    collabError = ""
     sharesUpdated()
   }
 
@@ -134,6 +153,137 @@ Item {
     listProcess.generation = generation
     listProcess.config = Model.curlConfig({ url: Model.listUrl(baseUrl), key: apiKey })
     listProcess.running = true
+  }
+
+  function startShared() {
+    if (apiKey === "" || sharedProcess.running) return
+    sharedProcess.generation = targetGeneration
+    sharedProcess.config = Model.curlConfig({ url: Model.collabSharesUrl(baseUrl), key: apiKey })
+    sharedProcess.running = true
+  }
+
+  // --- Live collaboration -------------------------------------------
+
+  // Load (or reload) a share's collab settings. If a request for another
+  // slug is in flight, finishCollab loads the wanted one afterwards.
+  function loadCollab(slug) {
+    if (apiKey === "" || !slug) return
+    collabWant = slug
+    if (!collabInfo || collabInfo.slug !== slug) collabError = ""
+    if (collabProcess.running) return
+    startCollab("info", slug, "", Model.curlConfig({ url: Model.collabUrl(baseUrl, slug), key: apiKey }))
+  }
+
+  function setCollab(slug, enabled) {
+    if (apiKey === "" || collabProcess.running || !slug) return
+    startCollab(enabled ? "enable" : "disable", slug, "", Model.curlConfig({
+      url: Model.collabUrl(baseUrl, slug), key: apiKey, method: "PUT", json: { enabled: enabled === true }
+    }))
+  }
+
+  // A new link kills the old one; editors who already joined keep access.
+  function rotateInvite(slug) {
+    if (apiKey === "" || collabProcess.running || !slug) return
+    startCollab("rotate", slug, "", Model.curlConfig({
+      url: Model.collabInviteUrl(baseUrl, slug), key: apiKey, method: "POST"
+    }))
+  }
+
+  function removeMember(slug, userId) {
+    if (apiKey === "" || collabProcess.running || !slug || !userId) return
+    startCollab("remove", slug, userId, Model.curlConfig({
+      url: Model.collabMemberUrl(baseUrl, slug, userId), key: apiKey, method: "DELETE"
+    }))
+  }
+
+  function startCollab(kind, slug, userId, config) {
+    collabProcess.kind = kind
+    collabProcess.slug = slug
+    collabProcess.userId = userId
+    collabProcess.generation = targetGeneration
+    collabProcess.config = config
+    collabWant = slug
+    if (kind === "info") collabLoading = true
+    else collabBusy = kind
+    collabError = ""
+    collabProcess.running = true
+  }
+
+  // The invite link is a join credential: it reaches wl-copy over stdin,
+  // never argv (world-readable in /proc), and is never logged.
+  function copyInvite() {
+    var url = collabInfo ? collabInfo.invite_url : ""
+    if (url === "" || clipProcess.running) return
+    clipProcess.payload = url
+    clipProcess.running = true
+    showStatus("Invite link copied")
+  }
+
+  function openLive(slug) {
+    var url = Model.liveUrl(baseUrl, slug)
+    if (url !== "") openInBrowser({ url: url })
+  }
+
+  function setCollabFlag(slug, enabled) {
+    var changed = false
+    var next = []
+    for (var i = 0; i < shares.length; i++) {
+      var s = shares[i]
+      if (s.slug === slug && s.collab_enabled !== enabled) {
+        s = Object.assign({}, s, { collab_enabled: enabled })
+        changed = true
+      }
+      next.push(s)
+    }
+    if (!changed) return
+    shares = next
+    recompute()
+    sharesUpdated()
+  }
+
+  function finishCollab(kind, slug, userId, exitCode, output, stderr, requestGeneration) {
+    if (kind === "info") collabLoading = false
+    else collabBusy = ""
+    if (requestGeneration !== targetGeneration) return
+    var ok = false
+    if (oversized(exitCode, output)) collabError = Model.errorMessage(413, "")
+    else if (exitCode !== 0) collabError = networkError(stderr)
+    else {
+      var result = Model.parseCurlOutput(output)
+      if (result.status < 200 || result.status >= 300) {
+        collabError = Model.errorMessage(result.status, result.body)
+      } else if (kind === "remove") {
+        ok = true
+        var gone = null
+        if (collabInfo && collabInfo.slug === slug) {
+          var members = collabInfo.members
+          for (var i = 0; i < members.length; i++) if (members[i].user_id === userId) gone = members[i]
+        }
+        showStatus("Removed " + (gone ? gone.name : "editor") + " \u2014 invite link replaced")
+        // Removal rotates the invite server-side; refetch link + members.
+        Qt.callLater(function() { root.loadCollab(slug) })
+      } else {
+        var info = Model.normaliseCollabInfo(Model.parseJson(result.body), slug)
+        if (!info) {
+          collabError = "Unexpected response from passpage"
+        } else {
+          ok = true
+          if (slug === collabWant) collabInfo = info
+          if (kind !== "info") generation++
+          setCollabFlag(slug, info.enabled)
+          var label = Model.displayTitle(shareBySlug(slug)) || slug
+          if (kind === "enable") showStatus("Collaboration on for " + label)
+          else if (kind === "disable") showStatus("Collaboration off for " + label)
+          else if (kind === "rotate") showStatus("New invite link \u2014 the old one no longer works")
+        }
+      }
+    }
+    collabFinished(kind, slug, ok)
+    // Another pane was opened while this request ran: load that one now.
+    if (collabWant !== "" && collabWant !== slug) {
+      var want = collabWant
+      Qt.callLater(function() { root.loadCollab(want) })
+    }
   }
 
   function showStatus(text) {
@@ -234,6 +384,7 @@ Item {
         loaded = true
         error = ""
         sharesUpdated()
+        if (panelOpen) startShared()
         return
       }
       error = "Unexpected response from passpage"
@@ -317,6 +468,7 @@ Item {
         // are additionally discarded by the generation bump.
         root.apiKey = next
         root.generation++
+        root.targetGeneration++
         root.clearShares()
       }
       root.keyChecked = true
@@ -372,6 +524,69 @@ Item {
       stdinEnabled = true
     }
     onExited: function(exitCode) { root.finishAction(kind, slug, exitCode, actionOut.text, actionErr.text, generation) }
+  }
+
+  // Shared-with-me list. A failed fetch keeps the previous list, and a 404
+  // (a self-hosted backend without collab) just never shows the section.
+  Process {
+    id: sharedProcess
+    property string config: ""
+    property int generation: 0
+    command: root.curlCommand
+    stdinEnabled: true
+    stdout: StdioCollector { id: sharedOut; waitForEnd: true }
+    onStarted: {
+      write(config)
+      config = ""
+      stdinEnabled = false
+      stdinEnabled = true
+    }
+    onExited: function(exitCode) {
+      if (generation !== root.targetGeneration || root.oversized(exitCode, sharedOut.text) || exitCode !== 0) return
+      var result = Model.parseCurlOutput(sharedOut.text)
+      if (result.status === 404) { root.sharedWithMe = []; return }
+      if (result.status !== 200) return
+      var data = Model.parseJson(result.body)
+      if (!(data instanceof Array)) return
+      var next = Model.normaliseSharedWithMe(data)
+      if (!Model.sameSharedLists(next, root.sharedWithMe)) root.sharedWithMe = next
+    }
+  }
+
+  Process {
+    id: collabProcess
+    property string kind: ""
+    property string slug: ""
+    property string userId: ""
+    property string config: ""
+    property int generation: 0
+    command: root.curlCommand
+    stdinEnabled: true
+    stdout: StdioCollector { id: collabOut; waitForEnd: true }
+    stderr: StdioCollector { id: collabErr; waitForEnd: true }
+    onRunningChanged: if (!running) config = ""
+    onStarted: {
+      write(config)
+      config = ""
+      stdinEnabled = false
+      stdinEnabled = true
+    }
+    onExited: function(exitCode) {
+      root.finishCollab(kind, slug, userId, exitCode, collabOut.text, collabErr.text, generation)
+    }
+  }
+
+  Process {
+    id: clipProcess
+    property string payload: ""
+    command: ["wl-copy"]
+    stdinEnabled: true
+    onStarted: {
+      write(payload)
+      payload = ""
+      stdinEnabled = false
+      stdinEnabled = true
+    }
   }
 
   Timer {

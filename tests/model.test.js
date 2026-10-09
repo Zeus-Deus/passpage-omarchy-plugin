@@ -336,3 +336,140 @@ test("wheelContentY moves a notch by the step and clamps to the range", () => {
   assert.equal(M.wheelContentY(0, 200, 400, 0, -120, 150), 0, "no range means no movement")
   assert.equal(M.wheelContentY(null, NaN, undefined, null, -120, 150), 0, "junk input is inert")
 })
+
+// --- Live collaboration -------------------------------------------------
+
+const SLUG = "Ab3dEfGhIjKlMnOpQrStUv"
+const collabInfo = (over) => Object.assign({
+  slug: SLUG, enabled: true,
+  invite_url: "https://passpage.space/join/" + SLUG + "/Zx9_yw-12345678abcdefgh",
+  live_url: "https://passpage.space/live/" + SLUG,
+  members: [
+    { user_id: "11111111-1111-4111-8111-111111111111", name: "kaan", role: "owner", joined_at: null },
+    { user_id: "22222222-2222-4222-8222-222222222222", name: "Maya", role: "editor", joined_at: "2026-08-21T10:00:00Z" }
+  ],
+  limits: { max_members: 3, max_active_agents: 3, writes_per_minute: 60, max_revisions: 50 },
+  rev: 4
+}, over)
+
+test("normaliseShares carries collab_enabled and sameShareLists notices it", () => {
+  const [on] = M.normaliseShares([share({ collab_enabled: true })])
+  const [off] = M.normaliseShares([share({ collab_enabled: "yes" })])
+  assert.equal(on.collab_enabled, true)
+  assert.equal(off.collab_enabled, false, "only a real true counts")
+  assert.equal(M.sameShareLists([on], [off]), false)
+})
+
+test("collab URLs use the bearer routes and encode path parts", () => {
+  assert.equal(M.collabUrl("https://passpage.space", "a-b"), "https://passpage.space/api/shares/a-b/collab")
+  assert.equal(M.collabInviteUrl("https://passpage.space", "a-b"), "https://passpage.space/api/shares/a-b/collab/invite")
+  assert.equal(M.collabMemberUrl("https://passpage.space", "a-b", "u/../x"),
+    "https://passpage.space/api/shares/a-b/collab/members/u%2F..%2Fx")
+  assert.equal(M.collabSharesUrl("https://passpage.space"), "https://passpage.space/api/collab/shares")
+  assert.equal(M.liveUrl("https://passpage.space", "a-b"), "https://passpage.space/live/a-b")
+  assert.equal(M.liveUrl("https://passpage.space", "../evil"), "", "live URL is built from a validated slug")
+})
+
+test("curlConfig names the plugin as the acting agent", () => {
+  assert.ok(M.curlConfig({ url: "u", key: "k" }).includes('header = "X-Passpage-Agent: Omarchy"\n'))
+})
+
+test("normaliseCollabInfo accepts only the slug we asked about", () => {
+  const info = M.normaliseCollabInfo(collabInfo(), SLUG)
+  assert.equal(info.enabled, true)
+  assert.equal(info.max_members, 3)
+  assert.equal(info.rev, 4)
+  assert.equal(info.members.length, 2)
+  assert.equal(M.normaliseCollabInfo(collabInfo({ slug: "other" }), SLUG), null)
+  assert.equal(M.normaliseCollabInfo([], SLUG), null)
+  assert.equal(M.normaliseCollabInfo(null, SLUG), null)
+  assert.equal(M.normaliseCollabInfo(collabInfo({ limits: { max_members: null } }), SLUG).max_members, null)
+})
+
+test("normaliseCollabInfo keeps only a real invite link for this share", () => {
+  const ok = M.normaliseCollabInfo(collabInfo(), SLUG)
+  assert.equal(ok.invite_url, "https://passpage.space/join/" + SLUG + "/Zx9_yw-12345678abcdefgh")
+  const bad = (url) => M.normaliseCollabInfo(collabInfo({ invite_url: url }), SLUG).invite_url
+  assert.equal(bad("https://passpage.space/join/someoneElse/code"), "", "other slug")
+  assert.equal(bad("javascript:alert(1)//join/" + SLUG + "/c"), "")
+  assert.equal(bad("https://passpage.space/join/" + SLUG + "/c d"), "", "whitespace")
+  assert.equal(bad("https://passpage.space/join/" + SLUG + "/c?x=1"), "", "query")
+  assert.equal(bad(null), "")
+  assert.equal(M.normaliseCollabInfo(collabInfo({ enabled: false }), SLUG).invite_url, "", "no link while off")
+})
+
+test("normaliseCollabInfo bounds and sanitizes members", () => {
+  const members = [
+    { user_id: "u-1", name: "<img src=x>Eve\u202e", role: "editor" },
+    { user_id: "u-1", name: "dupe", role: "editor" },
+    { user_id: "../x", name: "bad id", role: "editor" },
+    { user_id: "u-2", name: "", role: "admin" },
+    "junk", null
+  ]
+  const info = M.normaliseCollabInfo(collabInfo({ members }), SLUG)
+  assert.deepEqual(info.members, [
+    { user_id: "u-1", name: "img src=x Eve", role: "editor" },
+    { user_id: "u-2", name: "Someone", role: "editor" }
+  ])
+  const many = Array.from({ length: 1000 }, (_, i) => ({ user_id: "u" + i, name: "n", role: "editor" }))
+  assert.equal(M.normaliseCollabInfo(collabInfo({ members: many }), SLUG).members.length, 200)
+})
+
+test("editorsText counts editors against the owner's plan cap", () => {
+  const info = M.normaliseCollabInfo(collabInfo(), SLUG)
+  assert.equal(M.editorsOf(info).length, 1, "owner is not an editor")
+  assert.equal(M.editorsText(info), "1 / 3 editors")
+  const unlimited = M.normaliseCollabInfo(collabInfo({ limits: {} }), SLUG)
+  assert.equal(M.editorsText(unlimited), "1 editor")
+  const none = M.normaliseCollabInfo(collabInfo({ members: [], limits: {} }), SLUG)
+  assert.equal(M.editorsText(none), "No editors yet")
+  assert.equal(M.editorsText(null), "No editors yet")
+})
+
+test("maskedInvite never shows the slug or code", () => {
+  const url = "https://passpage.space/join/" + SLUG + "/Zx9_yw-12345678abcdefgh"
+  const shown = M.maskedInvite(url)
+  assert.equal(shown, "passpage.space/join/\u2022\u2022\u2022\u2022\u2022\u2022")
+  assert.ok(!shown.includes("Zx9") && !shown.includes(SLUG))
+  assert.equal(M.maskedInvite("https://passpage.space/v/x/"), "")
+  assert.equal(M.maskedInvite(""), "")
+})
+
+test("normaliseSharedWithMe keeps only pages others invited us to", () => {
+  const list = M.normaliseSharedWithMe([
+    { slug: "mine", title: "Own", url: "https://passpage.space/v/mine/", role: "owner", owner: "kaan" },
+    { slug: "theirs", title: "<b>Pricing</b>", url: "https://passpage.space/v/theirs/", role: "editor", owner: "Lena\u202e" },
+    { slug: "theirs", title: "dupe", url: "", role: "editor", owner: "x" },
+    { slug: "../x", title: "bad", role: "editor" },
+    { slug: "nourl", title: null, url: "file:///etc/passwd", role: "editor", owner: "" },
+    null, 4
+  ])
+  assert.deepEqual(list, [
+    { slug: "theirs", url: "https://passpage.space/v/theirs/", title: "b Pricing /b", owner: "Lena" },
+    { slug: "nourl", url: "", title: "", owner: "" }
+  ])
+  assert.equal(M.sharedDetail(list[0]), "from Lena · you can edit")
+  assert.equal(M.sharedDetail(list[1]), "you can edit")
+  assert.deepEqual(M.normaliseSharedWithMe({}), [])
+  assert.equal(M.sameSharedLists(list, M.normaliseSharedWithMe([
+    { slug: "theirs", title: "<b>Pricing</b>", url: "https://passpage.space/v/theirs/", role: "editor", owner: "Lena" },
+    { slug: "nourl", title: null, url: "file:///etc/passwd", role: "editor", owner: "" }
+  ])), true)
+  assert.equal(M.sameSharedLists(list, list.slice(1)), false)
+})
+
+test("deleteMessage warns when editors lose access", () => {
+  const plain = share({ title: "Deck" })
+  const collab = share({ title: "Deck", collab_enabled: true })
+  const info = M.normaliseCollabInfo(collabInfo(), SLUG)
+  assert.equal(M.deleteMessage(plain, info), "Delete \u201cDeck\u201d? The link stops working immediately.")
+  assert.match(M.deleteMessage(collab, info), /1\u00a0editor loses access\.$/)
+  const two = M.normaliseCollabInfo(collabInfo({ members: collabInfo().members.concat(
+    [{ user_id: "u-3", name: "Jonas", role: "editor" }]) }), SLUG)
+  assert.match(M.deleteMessage(collab, two), /2\u00a0editors lose access\.$/)
+  const empty = M.normaliseCollabInfo(collabInfo({ members: [] }), SLUG)
+  assert.match(M.deleteMessage(collab, empty), /Live collaboration ends with it\.$/)
+  assert.match(M.deleteMessage(collab, null), /Everyone you invited to edit loses access\.$/, "count not loaded yet")
+  assert.match(M.deleteMessage(collab, M.normaliseCollabInfo(collabInfo({ slug: "zz" }), "zz")),
+    /Everyone you invited/, "another share's count is never used")
+})
