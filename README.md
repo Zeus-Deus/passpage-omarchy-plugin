@@ -180,12 +180,15 @@ This deletes the plugin folder and its bar entry. Your API key file
 ## Development
 
 ```bash
-node --test tests/model.test.js           # pure logic: expiry, formatting, curl config
+node --test tests/*.test.js               # pure logic; native check is opt-in
+PASSPAGE_NATIVE_TESTS=1 node --test tests/bar-layout.test.js  # installed Quattro kit
 omarchy plugin validate .                 # manifest + folder rules
 omarchy plugin add "$PWD" --yes --enable  # install a local clone
 git -C ~/.config/omarchy/plugins/space.passpage.shares pull && omarchy-restart-shell
 qs log -p /usr/share/omarchy/shell --tail 60
 ```
+
+See [Development notes](docs/DEVELOPMENT.md) for layout and compatibility details.
 
 ## License
 

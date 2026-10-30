@@ -370,14 +370,14 @@ Panel {
     }
   }
 
-  // Ids inside the icon Component are not reachable from the button, so the
-  // slot width comes from measuring the count text here.
+  // Match BarIconButton's separate label; only the glyph belongs inside
+  // iconComponent, whose painted bounds Quattro fits into one icon slot.
   TextMetrics {
     id: countMetrics
     text: root.countText
     font.family: root.fontFamily
-    font.pixelSize: Style.font.caption
-    font.bold: true
+    font.pixelSize: button.separateCount ? Style.bar.iconFont : Style.font.caption
+    font.bold: !button.separateCount
   }
 
   BarIconButton {
@@ -385,7 +385,17 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     tooltipText: root.heroMeta
-    slotSize: Style.bar.iconSlot + (root.countText !== "" ? countMetrics.width + Style.space(3) : 0)
+    // Older Quattro has no separate label and does not normalize custom
+    // icon content. Keep its original layout without requiring the new API.
+    readonly property bool separateCount: "labelText" in button
+    Binding {
+      target: button
+      property: "labelText"
+      value: root.countText
+      when: button.separateCount
+    }
+    slotSize: Style.bar.iconSlot + (root.countText !== ""
+      ? countMetrics.width + Style.space(separateCount ? 4 : 3) : 0)
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) passpage.refresh()
       else root.toggle()
@@ -437,7 +447,7 @@ Panel {
           }
 
           Text {
-            visible: root.countText !== ""
+            visible: !button.separateCount && root.countText !== ""
             anchors.verticalCenter: parent.verticalCenter
             text: root.countText
             color: root.barForeground

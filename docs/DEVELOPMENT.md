@@ -1,4 +1,4 @@
-# passpage-omarchy-plugin
+# Passpage plugin development
 
 Omarchy (Quattro) shell plugin for [passpage.space](https://passpage.space) —
 view and manage your passpages straight from the top bar instead of the
@@ -84,3 +84,20 @@ Publish throwaway shares for destructive tests — never delete the user's.
 - Shell runtime contract: https://github.com/basecamp/omarchy/blob/quattro/shell/README.md
 - Built-in plugin examples: https://github.com/basecamp/omarchy/tree/quattro/shell/plugins
 - Plugin dev guide: https://omarchyplugins.com/develop.html
+
+## Bar sizing regression
+
+Newer Quattro fits all painted `iconComponent` content into one icon-sized
+box. Keep the active count in `BarIconButton.labelText`; the inline count is
+only a fallback for older kits without that property. Match the label font
+and spacing when measuring the button slot.
+
+Run the extracted-button native regression against an installed Quattro kit
+without connecting to the live desktop or loading credentials:
+
+```bash
+PASSPAGE_NATIVE_TESTS=1 node --test tests/bar-layout.test.js
+```
+
+It covers empty, one-, two-, and three-digit counts at three font sizes.
+The ordinary test run skips this native check unless explicitly enabled.
